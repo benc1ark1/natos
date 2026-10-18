@@ -1,0 +1,31 @@
+{
+  "name": "personal-os",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test:telegram": "next build && node --experimental-strip-types --no-warnings --test tests/telegram-guard.test.mjs",
+    "test:unit": "node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs --test tests/*unit.test.mjs",
+    "test:chat": "node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs --test --test-concurrency=1 tests/*chat.test.mjs",
+    "test": "npm run test:unit && npm run test:chat",
+    "test:ai": "node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-a.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-b.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-c1.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-c2.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-d1.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-d2.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-e.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/jarvis-g.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-h.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-i.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-j.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-k.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-l.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-m.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-n.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/build-o.ai.mjs && node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs tests/ai/multi-part.ai.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.117.2",
+    "next": "^16.3.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  }
+}

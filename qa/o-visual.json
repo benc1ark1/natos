@@ -1,0 +1,23 @@
+{
+  "report": [
+    {
+      "name": "o-home",
+      "path": "/",
+      "scrollWidth": 390,
+      "outside": []
+    },
+    {
+      "name": "o-settings",
+      "path": "/settings",
+      "scrollWidth": 390,
+      "outside": []
+    },
+    {
+      "name": "o-home-game",
+      "path": "/",
+      "scrollWidth": 390,
+      "outside": []
+    }
+  ],
+  "errors": []
+}

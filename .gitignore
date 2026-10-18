@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# secrets: never commit
+.env
+.env*.local
+
+# misc
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+
+# Vercel CLI project link
+.vercel
+.env*
+
+# local SQL that contains secrets
+*.local.sql
+
+# data backups (Export my data): personal, never commit
+nat-os-backup-*.json

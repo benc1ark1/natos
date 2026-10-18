@@ -1,0 +1,45 @@
+You are helping me build a V1 personal operating system. Inspect the existing project before changing its framework or structure.
+
+Core principle:
+The Supabase database is the durable memory. The dashboard is a replaceable interface. Do not hardcode production records in the interface.
+
+Required V1 modules:
+1. Authentication before personal data loads.
+2. Home view with operator name, three to five key tasks, daily habits, weekly goals, monthly goals, and upcoming calendar space.
+3. Tasks view with list and Kanban presentations of the same records.
+4. Fast text capture available from main views.
+5. Confirmation form for AI-proposed task fields.
+6. Brain view organized by categories, related tasks, notes, links, and risks.
+7. Journal view with summary plus an intentional raw-text reveal.
+8. Archive view for completed tasks.
+9. Clear loading, empty, success, and error states.
+10. Responsive mobile layout.
+
+Data requirements:
+Use the existing Supabase schema for categories, tasks, habits, habit_items, habit_logs, journal_entries, goals, and memory_items. Respect row level security. All normal browser operations must run as the authenticated user. Never expose a service role key to browser code.
+
+Task behavior:
+A task contains title, optional details, category, priority, status, optional due date, key-task state, source, original source text, completion timestamp, archive timestamp, created timestamp, and updated timestamp. Completing a task archives it instead of deleting it. List and Kanban views must update the same task identifier.
+
+Habit behavior:
+Habit item completion is date specific. A parent habit is complete only when all required items are complete. Show completed required items divided by total required items.
+
+Journal behavior:
+Preserve raw text exactly. Store a separate generated summary. Never replace raw text with a summary.
+
+Implementation sequence:
+1. Explain the current project structure.
+2. Propose the smallest file plan.
+3. Implement authentication and database access.
+4. Implement task list, capture, edit, completion, and archive.
+5. Implement Kanban without duplicate records.
+6. Implement home dashboard cards.
+7. Implement habits, goals, journal, and brain views.
+8. Add explicit errors and responsive styling.
+9. Add tests for persistence, ownership, duplicate prevention, archive behavior, and habit completion.
+10. Provide commands for running the project using its existing package manager.
+
+Scope limits:
+Do not add finance, nutrition, wearable, or automatic voice features in this pass. Do not invent external services. Do not place secret values in source files. Ask before destructive schema changes.
+
+Before finishing, audit every requested behavior, identify anything incomplete, and provide a concise file-by-file summary of changes.

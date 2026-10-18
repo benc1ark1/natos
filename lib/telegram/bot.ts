@@ -1,0 +1,229 @@
+// Server-only: what the bot does with one message or button tap from Nat.
+// Messages queue up and are handled one at a time, in order (lib/telegram/turns.ts); each goes to the
+// brain (lib/telegram/converse.ts). Button taps are handled straight away (lib/telegram/cards.ts).
+// Only called after lib/telegram/guard.ts has checked the secret and that the update is Nat's.
+import 'server-only'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { usageReport } from '../ai/usage'
+import { timeOf, todayISO } from '../time'
+import { esc, send, setMenuButton } from './api'
+import { buildBrief, loadDay } from './brief'
+import { refreshPinned } from './pinned'
+import { cancelOpenCard, newCard, onTap } from './cards'
+import { converse, type Outcome } from './converse'
+import type { TgUpdate } from './guard'
+import { openOwnerSession } from './owner-session'
+import { claim } from './sent'
+import { ideasText } from './ideas'
+import { mailText } from '../mail/draft'
+import { loadConnection } from '../integrations/store'
+import { syncGoogle } from '../google/sync'
+import { isLowRecovery, syncWhoop, whoopDay, whoopWords } from '../whoop/sync'
+import { enqueue, extendLock, isDone, nextQueued, releaseLock, say, setStatus, takeLock, type TurnRow } from './turns'
+
+export const appUrl = () => {
+  const host = process.env.VERCEL_PROJECT_PRODUCTION_URL
+  return host ? `https://${host}` : null
+}
+
+// /help: the short version of docs/GUIDE.md (the everyday guide). Kept under one phone screen.
+export const HELP = [
+  '<b>Nat OS</b>: talk to me normally. Nothing changes until you tap ✅, and every change has ↩️ Undo.',
+  '',
+  '☀️ <b>Morning</b>: the 7:00 brief is your day in order: routine, school, study, training (where, and when to leave), routine. Tick things off on it or on the pinned Today.',
+  '📥 <b>During the day</b>: send anything: “physics homework due Fri”, “did upper”, “move study to 5pm”, “skip gym today”, “I’m ill, lighten today”.',
+  '❓ <b>Questions</b>: I ask a few a day to fill gaps (tap an answer). “what do you still need to know?” lists them.',
+  '🌙 <b>21:00</b>: what’s done; the rest moves to tomorrow with one ✅.',
+  '🗓 <b>Sunday</b>: at 18:00 the “Your week” card places everything. 🔁 moves a session (“upper Sat at PureGym”), ✅ applies it all.',
+  '🏋️ <b>Training</b>: “why is lower on Thursday?”, “upper 2x or 3x?”, “which days should I give Owen?”, “game is Saturday this week”.',
+  '⏱ <b>Time</b>: “where can I save time?”, “how’s my load this week?”, “when am I free Thursday?”',
+  '📐 <b>Maths</b>: “what maths should I do?”, “matrices green”, “set trig yellow”, “Book 1 chapters 1–13 green”, “maths test Tue 20 Oct: proof, vectors”.',
+  '',
+  '/today · /week · /coming · /free tomorrow · /maths · /inbox · /brief · /pin · /app · /google · /sync · /whoop · /mail · /ideas · /usage · /cancel · /help',
+  '<i>The full guide is docs/GUIDE.md.</i>',
+].join('\n')
+
+/** The commands in Telegram's “/” menu (set once, with the menu button). */
+export const COMMANDS = [
+  ['today', 'The rest of today'], ['week', 'The next 7 days'], ['coming', 'Deadlines, tests and events soon'], ['free', 'Free time (add a day)'],
+  ['inbox', 'Your Inbox'], ['brief', 'Today’s brief'], ['pin', 'Refresh the pinned Today'], ['app', 'Open the dashboard'],
+  ['google', 'Google Calendar status'], ['sync', 'Sync Google Calendar now'], ['whoop', 'Whoop recovery'], ['mail', 'Email watcher'],
+  ['maths', 'Maths tracker'], ['ideas', 'Things I can’t do yet'], ['usage', 'AI spend'], ['cancel', 'Drop the open card'], ['help', 'How to use me'],
+].map(([command, description]) => ({ command, description }))
+
+const MAX_RUN_MS = 100_000   // stop starting new messages after this; the next message picks up the rest
+const WAIT_MS = 60_000       // how long a message waits for the one before it to finish
+
+/** Main entry: runs after the webhook has answered Telegram. Errors become a message to Nat. */
+export async function handleUpdate(update: TgUpdate): Promise<void> {
+  const chatId = (update.message?.chat?.id ?? update.callback_query?.message?.chat?.id)!
+  try {
+    const text = update.message?.text?.trim()
+    if (text && /^\/(start|help)\b/.test(text)) {   // no data needed
+      await send(chatId, HELP)
+      const url = appUrl()
+      if (url) await setMenuButton(chatId, `${url}/tg`).catch(() => null)   // "Dashboard" opens the app inside Telegram
+      return
+    }
+
+    const sb = await openOwnerSession()
+    if (update.callback_query) {
+      // Telegram may resend an update; handle each tap once.
+      if (typeof update.update_id === 'number' && !(await claim(sb, `upd:${update.update_id}`))) return
+      return await onTap(sb, chatId, update.callback_query)
+    }
+    if (!text) { await send(chatId, 'I can only read text for now. Try the dictation mic on your keyboard.'); return }
+
+    const mine = await enqueue(sb, text, update.message?.message_id ?? null)
+    if (mine === null) return   // Telegram resent a message that's already queued or handled
+    await drain(sb, chatId, mine)
+  } catch (e) {
+    await send(chatId, `⚠️ ${esc(e instanceof Error ? e.message : 'Something went wrong.')}`).catch(() => null)
+  }
+}
+
+export { claim }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Handle queued messages in order until none are left. Only one run at a time holds the lock; a message
+ * that arrives meanwhile waits until its turn has been handled (by whichever run holds the lock).
+ */
+export async function drain(sb: SupabaseClient, chatId: number, mine: number): Promise<void> {
+  const started = Date.now()
+  while (Date.now() - started < WAIT_MS) {
+    if (await takeLock(sb)) {
+      try {
+        while (Date.now() - started < MAX_RUN_MS) {
+          const { next, lost } = await nextQueued(sb)
+          for (const t of lost) await say(sb, chatId, `⚠️ Sorry, I lost track of “${esc(t.text.slice(0, 80))}”. Send it again?`)
+          if (!next) return
+          await runTurn(sb, chatId, next)
+          await extendLock(sb)
+        }
+      } finally {
+        await releaseLock(sb)
+      }
+      return
+    }
+    if (await isDone(sb, mine)) return
+    await sleep(700)
+  }
+}
+
+async function runTurn(sb: SupabaseClient, chatId: number, turn: TurnRow): Promise<void> {
+  await setStatus(sb, turn.id, 'working')
+  let outcome: Outcome | 'command' = 'failed'
+  try {
+    outcome = await respond(sb, chatId, turn)
+  } catch (e) {
+    await say(sb, chatId, `⚠️ ${esc(e instanceof Error ? e.message : 'Something went wrong.')}`).catch(() => null)
+  } finally {
+    await setStatus(sb, turn.id, 'done', outcome)
+  }
+}
+
+async function respond(sb: SupabaseClient, chatId: number, turn: TurnRow): Promise<Outcome | 'command'> {
+  const text = turn.text
+  const ctx = { claim: (key: string) => claim(sb, key) }
+  if (!text.startsWith('/')) return converse(sb, chatId, turn, ctx)
+
+  if (/^\/ask\b/.test(text)) return converse(sb, chatId, turn, { ...ctx, forceQuestion: true })
+  if (/^\/(inbox|week|coming|free|postponed|next|today|maths)\b/.test(text)) return converse(sb, chatId, turn, ctx)   // instant lists
+  const add = text.match(/^\/add\b\s*(.*)$/s)
+  if (add) {
+    if (!add[1].trim()) { await say(sb, chatId, 'Send what to add, e.g. /add Physics homework due Friday'); return 'command' }
+    await newCard(sb, chatId, add[1])
+    return 'new'
+  }
+  if (/^\/brief\b/.test(text)) {
+    const d = await loadDay(sb, todayISO())
+    const b = await buildBrief(sb, d, new Date(), appUrl())
+    await say(sb, chatId, b.html, b.buttons)
+    return 'command'
+  }
+  if (/^\/cancel\b/.test(text)) { await cancelOpenCard(sb, chatId); return 'command' }
+  if (/^\/(app|dashboard)\b/.test(text)) {
+    const url = appUrl()
+    await say(sb, chatId, url ? 'Your dashboard, inside Telegram (signed in):' : 'The dashboard link isn’t set up here.', url ? [[{ text: '📱 Open dashboard', web_app: { url: `${url}/tg` } }]] : undefined)
+    return 'command'
+  }
+  if (/^\/pin\b/.test(text)) {
+    const r = await refreshPinned(sb, chatId, new Date(), { byNat: true })
+    if (r !== 'sent') await say(sb, chatId, r === 'failed' ? '⚠️ Couldn’t update the pinned Today message.' : '📌 Today is pinned at the top and up to date.')
+    return 'command'
+  }
+  if (/^\/usage\b/.test(text)) { await say(sb, chatId, await usageText(sb)); return 'command' }
+  if (/^\/ideas\b/.test(text)) { await say(sb, chatId, await ideasText(sb)); return 'command' }
+  if (/^\/(google|sync)\b/.test(text)) { await say(sb, chatId, await googleText(sb, /^\/sync\b/.test(text))); return 'command' }
+  if (/^\/whoop\b/.test(text)) { await say(sb, chatId, await whoopText(sb)); return 'command' }
+  if (/^\/mail\b/.test(text)) { await say(sb, chatId, await mailText(sb)); return 'command' }
+  const cap = text.match(/^\/cap\b\s*\$?\s*([\d.]*)\s*$/)
+  if (cap) { await say(sb, chatId, await setCap(sb, cap[1])); return 'command' }
+  await say(sb, chatId, HELP)
+  return 'command'
+}
+
+const usd = (n: number) => `$${n < 0.1 && n > 0 ? n.toFixed(3) : n.toFixed(2)}`
+const JOB: Record<string, string> = { chat: 'chat', sort: 'sorting', ask: 'Ask AI (dashboard)', plan: 'planning', mail: 'email watcher' }
+
+async function usageText(sb: SupabaseClient): Promise<string> {
+  const r = await usageReport(sb)
+  const lines = [`<b>AI spend</b>`, `Today: ${usd(r.today)} of your ${usd(r.cap)} daily limit (${r.todayCalls} calls)`]
+  for (const [f, v] of r.byFeature) lines.push(`• ${JOB[f] ?? esc(f)}: ${usd(v.cost)} (${v.calls})`)
+  lines.push(`This month: ${usd(r.month)} (${r.monthCalls} calls)`, '', '<i>/cap 2 sets the daily limit to $2.</i>')
+  return lines.join('\n')
+}
+
+/** /cap 2: Nat sets his own daily limit (his explicit command, so no card needed). */
+async function setCap(sb: SupabaseClient, raw: string): Promise<string> {
+  const n = Number(raw)
+  if (!raw || !Number.isFinite(n) || n < 0 || n > 100) return 'Send the daily limit in dollars, e.g. /cap 2 (0 to 100).'
+  const value = Math.round(n * 100) / 100
+  const { data, error } = await sb.from('profiles').update({ ai_daily_cap_usd: value }).not('user_id', 'is', null).select('user_id')
+  if (error) return `⚠️ Not changed: ${esc(error.message)}`
+  if (!data?.length) {
+    const ins = await sb.from('profiles').insert({ ai_daily_cap_usd: value })
+    if (ins.error) return `⚠️ Not changed: ${esc(ins.error.message)}`
+  }
+  return `Daily AI limit set to ${usd(value)}.`
+}
+
+/** /google: the connection and his calendars; /sync also runs a sync now. */
+async function googleText(sb: SupabaseClient, run: boolean): Promise<string> {
+  const c = await loadConnection(sb, 'google')
+  const url = appUrl()
+  const settings = url ? ` <a href="${esc(url)}/settings">Settings</a>` : ' the Settings page'
+  if (!c || c.status === 'disconnected') return `📆 Google Calendar isn’t connected. Connect it on${settings} (Google Calendar → Connect).`
+  if (c.status !== 'connected') return `⚠️ Google Calendar needs connecting again: open${settings} → Google Calendar → Connect again.`
+  const lines: string[] = []
+  if (run) {
+    const r = await syncGoogle(sb, { readOthers: true })
+    lines.push(r?.ok ? `🔄 Synced: ${r.pushed} added, ${r.changed} updated, ${r.removed} removed in Life OS; ${r.pulled} change${r.pulled === 1 ? '' : 's'} from Google; ${r.read} events read.${r.homework.length ? ` New homework: ${esc(r.homework.map((h) => h.title).join(', '))}.` : ''}` : `⚠️ Sync failed: ${esc(r?.error ?? 'not connected')}`)
+  }
+  const fresh = await loadConnection(sb, 'google')
+  const cals = ((fresh?.settings ?? {}) as { calendars?: { name: string; read: boolean; school: boolean }[] }).calendars ?? []
+  lines.push(`📆 <b>Google Calendar</b>: connected${c.account ? ` as ${esc(c.account)}` : ''}. Last sync ${fresh?.last_sync_at ? timeOf(fresh.last_sync_at) : 'not yet'}.`)
+  if (fresh?.last_error) lines.push(`Last problem: ${esc(fresh.last_error)}`)
+  if (cals.length) lines.push(...cals.map((x) => `• ${esc(x.name)}: ${x.read ? `read${x.school ? ' (school)' : ''}` : 'not read'}`))
+  lines.push('<i>“Stop reading the Family calendar”, “the Timetable calendar is school”, or /sync to sync now.</i>')
+  return lines.join('\n')
+}
+
+/** /whoop: syncs, then today's recovery and sleep (and whether it makes today lighter). */
+async function whoopText(sb: SupabaseClient): Promise<string> {
+  const c = await loadConnection(sb, 'whoop')
+  const url = appUrl()
+  const settings = url ? ` <a href="${esc(url)}/settings">Settings</a>` : ' the Settings page'
+  if (!c || c.status === 'disconnected') return `⌚ Whoop isn’t connected. Connect it on${settings} (Whoop → Connect).`
+  if (c.status !== 'connected') return `⚠️ Whoop needs connecting again: open${settings} → Whoop → Connect again.`
+  const r = await syncWhoop(sb, { force: true })
+  const d = await whoopDay(sb)
+  const planning = await sb.from('profiles').select('planning').maybeSingle().then((x) => x.data?.planning ?? null)
+  const lines = [d ? `⌚ <b>Today</b>: ${esc(whoopWords(d)) || 'no score yet'}` : '⌚ No Whoop score for today yet.']
+  if (isLowRecovery(d, planning)) lines.push('<i>Low recovery: plans today are lighter (no gym placed), and protect your sleep.</i>')
+  if (r && !r.ok) lines.push(`⚠️ Sync problem: ${esc(r.error ?? '')}`)
+  if (r?.logged.length) lines.push(`Counted: ${esc(r.logged.map((l) => `${l.target} +1 (${l.sport})`).join(', '))}`)
+  return lines.join('\n')
+}

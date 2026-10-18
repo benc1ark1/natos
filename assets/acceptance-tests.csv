@@ -1,0 +1,25 @@
+id,area,test,expected_result,risk_if_failed
+T01,Authentication,Open a protected route while signed out,Personal records do not load,Critical
+T02,Ownership,Sign in as a second test user,First user's records are not visible,Critical
+T03,Capture,Submit a clear text task,A structured proposal is displayed before confirmation,High
+T04,Capture,Confirm a proposed task,One database record is created,High
+T05,Persistence,Refresh after task creation,The same task remains visible,High
+T06,Classification,Submit a vague idea,The input remains recoverable in inbox,High
+T07,Classification,Simulate model failure,A visible error or pending state preserves the input,High
+T08,Duplicates,Submit identical text twice,A likely duplicate is warned about or clearly visible,Medium
+T09,Editing,Change a task title and refresh,The edited title remains,High
+T10,Kanban,Move one task to today,The same record appears once with updated status,High
+T11,Key tasks,Star a task,It appears on the home view,Medium
+T12,Archive,Complete a task,It leaves active views and appears in archive,High
+T13,Habits,Complete some required items,Parent remains incomplete and partial progress is shown,Medium
+T14,Habits,Complete all required items,Parent habit becomes complete,Medium
+T15,Habits,Change the selected date,Completion state is date specific,Medium
+T16,Goals,Create a weekly goal,It appears in the weekly goal section,Low
+T17,Journal,Save a raw entry and summary,Both remain available after refresh,High
+T18,Journal,Compare summary with raw text,Summary contains no unsupported claims,Medium
+T19,Brain,Open a category,Only related owner records are displayed,High
+T20,Privacy,View a sensitive dashboard card,Values remain hidden until intentionally revealed,High
+T21,Secrets,Inspect browser code and network payloads,Service role and bot tokens are absent,Critical
+T22,Errors,Force a database write failure,A visible error appears and success is not claimed,High
+T23,Mobile,Use a narrow mobile viewport,Capture navigation and key tasks remain usable,Medium
+T24,Backup,Restore an export in a test environment,Expected record counts and archives are present,Critical

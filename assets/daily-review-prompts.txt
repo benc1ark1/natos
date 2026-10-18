@@ -1,0 +1,34 @@
+MORNING REVIEW
+
+1. What fixed meetings or deadlines shape today?
+2. Which tasks are urgent because another person or project is waiting?
+3. Which tasks have the greatest impact on my active weekly or monthly goals?
+4. What three to five tasks will I mark as key tasks?
+5. Which routine will help me start the day well?
+
+AI PRIORITY PROMPT
+
+Review the supplied open tasks, active goals, deadlines, and dependencies. Recommend the three tasks most likely to move my goals forward today. Explain each recommendation in one sentence. Use only the supplied records. Do not edit, complete, or reprioritize records automatically. State when important deadline or dependency information is missing.
+
+EVENING JOURNAL
+
+1. What happened today?
+2. What went well?
+3. Where did I struggle?
+4. What should I change or prioritize tomorrow?
+
+JOURNAL SUMMARY PROMPT
+
+Summarize this journal entry in four parts: what happened, what went well, what was difficult, and what deserves attention next. Use only details present in the entry. Do not diagnose the writer or invent causes. Keep the summary under 140 words.
+
+WEEKLY MEMORY REVIEW
+
+1. Which goals moved forward, and which records prove it?
+2. Which commitments remained open for most of the week?
+3. Which repeated obstacle appears in more than one dated entry?
+4. Which category contains the greatest unresolved risk?
+5. What one system change would reduce repeated friction next week?
+
+AI STRATEGY PROMPT
+
+Act as a strategic operating reviewer. Using only the supplied tasks, goals, journal summaries, and memory items, recommend the three actions most likely to improve progress toward active goals. For each action, cite the supporting record title or date. Separate urgent risks from high-impact opportunities. If evidence is missing, state what is missing. Do not invent personal history and do not edit records.

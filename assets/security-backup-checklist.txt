@@ -1,0 +1,40 @@
+PERSONAL OS SECURITY AND BACKUP CHECKLIST
+
+ACCESS
+[ ] Authentication is required before personal records load.
+[ ] Every personal table has row level security enabled.
+[ ] Policies restrict reads and writes to auth.uid() = user_id.
+[ ] A second test user cannot access the owner's records.
+[ ] Sensitive values are hidden by default in the interface.
+
+SECRETS
+[ ] .env.local is excluded from version control.
+[ ] The Supabase service role key is never shipped to browser code.
+[ ] AI API keys remain in protected server settings.
+[ ] Telegram bot tokens remain in protected server settings.
+[ ] Webhook requests are checked against a secret.
+[ ] Logs and error messages do not print tokens or full private payloads.
+
+DATA HANDLING
+[ ] V1 testing uses non-sensitive sample data.
+[ ] Raw journal text is revealed intentionally rather than displayed everywhere.
+[ ] Screenshots and recordings conceal private values.
+[ ] Destructive actions require confirmation.
+[ ] Completed tasks are archived rather than silently deleted.
+[ ] Database write failures are visible to the user.
+
+BACKUP
+[ ] Core tables are exported on a recurring schedule.
+[ ] Exports are stored in a protected location.
+[ ] The export date and source environment are recorded.
+[ ] Record counts are checked after export.
+[ ] A restore has been tested in a separate environment.
+[ ] Tasks, archives, goals, journals, and memory items survive restoration.
+[ ] Backup and restore procedures are repeated after major schema changes.
+
+RELEASE
+[ ] Development and production secrets are separated.
+[ ] Production authentication works before release.
+[ ] Capture and refresh persistence pass in production.
+[ ] Sign-out removes access to protected views.
+[ ] High-risk acceptance test failures are fixed before daily use.

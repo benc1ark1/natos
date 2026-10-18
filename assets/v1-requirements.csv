@@ -1,0 +1,13 @@
+module,pain_point,input,expected_output,v1_status,acceptance_criterion
+Task capture,Tasks are lost when capture requires too many steps,Plain text,A persistent inbox task,V1,A task can be entered in under 30 seconds and remains after refresh
+Task classification,A long backlog has no useful structure,Captured task text,A proposed category priority and date,V1,The user can confirm or correct the proposal before storage
+Key tasks,The full backlog hides today's important work,Existing open tasks,Three to five starred tasks on the home view,V1,Only selected key tasks appear in the primary focus area
+Habits,Recurring routines depend on memory,Completed habit items,Daily parent completion and percentage,V1,A parent habit completes only when all required items are complete
+Goals,Daily work becomes disconnected from outcomes,Weekly and monthly goal records,A small visible goal list,V1,The dashboard shows no more than five active goals per period
+Journal,Daily context and lessons are forgotten,Typed reflection or voice transcript,Raw entry plus grounded summary,V1,Both raw text and summary remain available after refresh
+Brain,Related tasks and notes are scattered,Selected category,Related tasks memory items and summary,V1,Selecting a category displays only records linked to that category
+Archive,Completed work disappears or clutters active lists,Completed task,Recoverable archived record,V1,Completing a task removes it from active views and preserves it in archive
+Telegram capture,Mobile capture is inconvenient,Telegram text or voice,Transcript routed through the task pipeline,Later,Telegram input uses the same validation and storage logic as dashboard capture
+Calendar,Upcoming commitments need context,Calendar events,Upcoming meeting list,Optional,Authorized events appear without exposing unnecessary private details
+Finance,Financial data is distributed across sources,External financial data,Consolidated private view,Excluded,Add only after a separate security and data accuracy review
+Nutrition,Meals and health metrics require separate design,Meal text or image,Nutrition record,Excluded,Add only after the core operating workflow is reliable

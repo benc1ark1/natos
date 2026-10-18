@@ -1,0 +1,18 @@
+# Never upload secrets: keys live in Vercel's environment settings instead.
+.env
+.env*
+*.local
+
+# Not needed to build the app
+node_modules
+.next
+.vercel
+.DS_Store
+*.tsbuildinfo
+BUILD-GUIDE.pdf
+assets
+plans
+*.local.sql
+scripts
+tests
+nat-os-backup-*.json
