@@ -13,7 +13,7 @@ import type { Guide } from '@/lib/types'
 import GuideBody from './GuideBody'
 import { Empty, ErrorBox, Loading, useLoad, useToast } from './ui'
 
-type UsedIn = { id: string; name: string; habit_id: string; habits: { name: string; is_active: boolean } | null }
+type UsedIn = { id: string; name: string; habit_id: string; archived_at?: string | null; habits: { name: string; is_active: boolean } | null }
 
 /** One guide: read it, edit it, or archive it. Shows which routine blocks link here. */
 export default function GuideView({ id }: { id: string }) {
@@ -21,10 +21,11 @@ export default function GuideView({ id }: { id: string }) {
     const sb = getSupabase()
     const [guides, used, lk] = await Promise.all([
       loadGuides(sb),
-      sb.from('habit_items').select('id,name,habit_id,habits(name,is_active)').eq('guide_id', id),
+      // '*' so archived blocks can be left out once supabase/life.sql adds archived_at (and it still works before)
+      sb.from('habit_items').select('*,habits(name,is_active)').eq('guide_id', id),
       loadLookupRows(sb),
     ])
-    return { guides, used: rows<UsedIn>(used as never, 'routine links').filter((u) => u.habits?.is_active), categories: lk.categories }
+    return { guides, used: rows<UsedIn>(used as never, 'routine links').filter((u) => u.habits?.is_active && !u.archived_at), categories: lk.categories }
   })
   const params = useSearchParams()
   const router = useRouter()

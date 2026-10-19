@@ -191,7 +191,7 @@ test('O15: a whole week through the bot, Monday’s first brief to Sunday’s re
     if (i === 1) {
       // Tuesday: football cancelled tomorrow (his own session now), and new homework from Classroom
       await setAt(d, '12:30')
-      chat.ai.script(CHAT, (body) => brain({ intent: 'instruction', reply: 'Football off on Wednesday.', actions: [act({ op: 'event_cancel', ref: refIn(body, /(E\d+) \| Football training/), date: D(2) })] }))
+      // (item 4: the life plug-in reads this one itself, no AI: "football" → Football training, tomorrow's session)
       await nat('football is cancelled tomorrow')
       collect('Tue 12:30 cancel football')
       await tapOn(lastOf(/Football training<\/b>.*→ cancelled/), '✅ Apply')

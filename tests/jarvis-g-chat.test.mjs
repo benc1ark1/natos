@@ -55,7 +55,8 @@ test('fix 2: what the bot can’t do is said plainly and kept in App ideas; recu
   assert.deepEqual(await q(`select status from app_ideas`), [{ status: 'dropped' }])
 
   // a recurring event: the days come from his words
-  await ask('football training every Monday and Wednesday 6 to 7:30', [{ op: 'event_weekly', value: 'Football training', words: 'every Monday and Wednesday', time: '18:00', time_to: '19:30' }])
+  // (item 4: the life plug-in reads this shape itself, no AI)
+  await nat('football training every Monday and Wednesday 6 to 7:30')
   assert.match(last().text, /📅 New: <b>Football training<\/b> every Mon \+ Wed 18:00–19:30/)
   await tap('Apply')
   assert.deepEqual(await q(`select title, repeat_days, start_time, end_time from events where archived_at is null`), [{ title: 'Football training', repeat_days: [1, 3], start_time: '18:00:00', end_time: '19:30:00' }])
