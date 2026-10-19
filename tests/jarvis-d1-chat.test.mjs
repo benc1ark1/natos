@@ -116,8 +116,11 @@ test('today’s plan moves its tasks to Today (and Undo moves them back); /today
   assert.match(last().text, /✅ also moves 1 task to Today/)
   await tap('Apply')
   assert.equal((await q(`select status from tasks where id = $1`, [phys.id]))[0].status, 'today')
+  // (item 5: /today is the Today list: his applied plan is kept, a tap each)
   await nat('/today')
-  assert.match(last().text, /🗓 <b>Plan<\/b>\n• \d\d:\d\d–\d\d:\d\d Physics homework/)
+  const m = chat.tg.sent().at(-1)
+  assert.match(m.text, /<b>\d\d:\d\d<\/b> 📌 Physics homework/)
+  assert.ok(chat.button(m, 'Physics homework'), 'a tap to tick it')
   assert.ok(chat.tg.sent().some((m) => m.text.startsWith('📌') && /Physics homework/.test(m.text)))
   await tap('Undo')
   assert.equal((await q(`select status from tasks where id = $1`, [phys.id]))[0].status, 'this_month')
@@ -146,8 +149,11 @@ test('a planner failure says so; nothing is planned', { skip }, async () => {
 test('the morning brief shows today’s plan', { skip }, async () => {
   const today = T().todayISO()
   await q(`insert into plan_blocks (user_id, plan_id, on_date, start_time, end_time, title, kind) values ($1, gen_random_uuid(), $2, '19:00', '19:45', 'Physics homework', 'focus')`, [chat.users.owner, today])
+  // item 5: the morning message is Today: his plan's blocks, each with a tap; the whole-day timeline is /brief full
   await nat('/brief')
-  // Build O: the plan is part of the day's timeline (routines, school, study, training), each block tickable
+  const m = chat.tg.sent().at(-1)
+  assert.match(m.text, /<b>19:00<\/b> 📚 Physics homework <i>· 45m<\/i>/)
+  assert.ok(chat.button(m, '19:00 Physics homework'), 'a tick button for it')
+  await nat('/brief full')
   assert.match(last().text, /📋 <b>Your day<\/b>[\s\S]*19:00 📚 Physics homework <i>45m<\/i>/)
-  assert.ok(chat.button(last(), '19:00 Physics homework'), 'a tick button for it')
 })

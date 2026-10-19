@@ -12,6 +12,14 @@ import { loadDay, tickButtons } from './brief'
 import { refreshPinned } from './pinned'
 import { remember } from './turns'
 
+/** Training that counts toward a weekly target: logged once per block (and taken off again if unticked).
+ *  (Item 5: also used by a tap on Today, lib/today/done.ts.) */
+export async function logTrainingTick(sb: SupabaseClient, b: { id: string; kind: string; target_id: string | null; on_date: string }, done: boolean) {
+  if (b.kind !== 'training' || !b.target_id) return
+  if (done) await sb.from('target_logs').insert({ target_id: b.target_id, done_on: b.on_date, amount: 1, source: 'task', external_id: `block:${b.id}` }).then(() => null, () => null)
+  else await sb.from('target_logs').delete().eq('source', 'task').eq('external_id', `block:${b.id}`)
+}
+
 /** A block ticked (or unticked). */
 export async function tickBlock(sb: SupabaseClient, chatId: number, tapId: string, blockId: string, messageId?: number) {
   const { data: b } = await sb.from('plan_blocks').select('id,title,kind,status,target_id,on_date').eq('id', blockId).maybeSingle()
@@ -19,11 +27,7 @@ export async function tickBlock(sb: SupabaseClient, chatId: number, tapId: strin
   const done = b.status === 'planned'
   const { error } = await sb.from('plan_blocks').update({ status: done ? 'done' : 'planned' }).eq('id', b.id).eq('status', b.status)
   if (error) { await answerTap(tapId, 'Couldn’t save that.'); return }
-  // training that counts toward a weekly target: logged once per block (and taken off again if unticked)
-  if (b.kind === 'training' && b.target_id) {
-    if (done) await sb.from('target_logs').insert({ target_id: b.target_id, done_on: b.on_date, amount: 1, source: 'task', external_id: `block:${b.id}` }).then(() => null, () => null)
-    else await sb.from('target_logs').delete().eq('source', 'task').eq('external_id', `block:${b.id}`)
-  }
+  await logTrainingTick(sb, b, done)
   const name = parseSessionTitle(b.title).name
   await answerTap(tapId, done ? `✅ ${name}` : `↩️ ${name}: not done`)
   await remember(sb, 'nat', `(ticked ${name}${done ? '' : ' off again'})`, { intent: 'tap' })

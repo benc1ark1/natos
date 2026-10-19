@@ -163,7 +163,7 @@ test('helpers: findItem by number / passage / name; kvOf keeps "=" in values; gu
   assert.equal(B.findItem(e, 'chapter 3').id, 'english-3')
   assert.deepEqual(B.kvOf('rule=a = b; what=x'), { rule: 'a = b', what: 'x' })
   assert.equal(B.guessDay({ holidays: '2026-10-24..2026-11-01' }, '2026-10-26').mode, 'half_term')
-  assert.equal(B.guessDay({ holidays: [{ from: '2026-12-19', to: '2027-01-03' }] }, '2026-10-26').mode, 'school')
+  assert.equal(B.guessDay({ holidays: [{ from: '2026-12-19', to: '2027-01-03' }] }, '2026-11-10').mode, 'school')   // (item 5: an odd value means the default holidays, a guess for 17 Oct – 1 Nov)
   assert.equal(B.guessDay(null, TODAY).dow, 1)
   assert.equal(composite(B.LAST_REAL.english, B.LAST_REAL.maths, B.LAST_REAL.reading), 34)
 })

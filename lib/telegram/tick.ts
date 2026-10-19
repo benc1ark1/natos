@@ -25,6 +25,7 @@ import { processMail } from '../mail/watcher'
 import { checkinDow, moreSettings } from '../settings'
 import { planningSettings } from '../freetime'
 import { proactive } from './schedule'
+import { morningAt } from '../today/holidays'
 
 // The brief, the nudge, the check-in day and the "leave in …" lead are his settings (lib/settings.ts: briefAt 07:00,
 // nudgeAt 18:00, checkinDay Sunday, leaveAlertMin 10 unless he changes them).
@@ -41,6 +42,8 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
   const planning = await sb.from('profiles').select('planning').maybeSingle().then((r) => (r.error ? null : r.data?.planning ?? null))
   const set = moreSettings(planning)
   const BRIEF_AT = set.briefAt, NUDGE_AT = set.nudgeAt
+  // item 5: the day starts at the morning message (on holidays his holiday wake time), not before
+  const MORNING = morningAt(planning, today)
   const once = async (key: string, html: () => Promise<string | { html: string; buttons?: Button[][] } | null>) => {
     if (!(await claim(sb, key))) return
     let delivered = false
@@ -98,7 +101,7 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
     await send(chatId, [`📚 <b>New homework from Google Classroom</b>`, ...google.homework.map((h) => `• ${h.subject ? `${esc(h.subject)}: ` : ''}${esc(h.title)} <i>(due ${dowShort(h.due)} ${shortDate(h.due)}${h.time ? `, ${h.time}` : ''})</i>`), '<i>Added as must-dos. Say “drop …” if one isn’t yours.</i>'].join('\n'))
     sent.push('homework')
     // Build O: if this week is planned, offer each new one a slot before it's due (outside quiet hours)
-    if (minutesOf(now) >= minutesOf(BRIEF_AT) && minutesOf(now) < minutesOf(set.quietFrom)) {
+    if (minutesOf(now) >= minutesOf(MORNING) && minutesOf(now) < minutesOf(set.quietFrom)) {
       const { data: fresh } = await sb.from('tasks').select('*').in('title', google.homework.map((h) => h.title)).is('archived_at', null).eq('source', 'import').order('created_at', { ascending: false }).limit(3)
       const vd = fresh?.length ? await loadViewData(sb, today, nowDate) : null
       for (const t of (fresh ?? []) as Task[]) await offerSlot(sb, chatId, t, vd!).catch(() => false)
@@ -128,7 +131,7 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
   // lib/telegram/asktype.ts)
   // (Build O: the gap questions ask what a session is, among everything else the planner needs: lib/telegram/gapask.ts.
   // This older one-per-tick question only runs until the first round of gap questions has started.)
-  if (minutesOf(now) >= minutesOf(BRIEF_AT) && minutesOf(now) < minutesOf(planningSettings(planning).heavyUntil)
+  if (minutesOf(now) >= minutesOf(MORNING) && minutesOf(now) < minutesOf(planningSettings(planning).heavyUntil)
     && !(await sb.from('telegram_sent').select('key').eq('key', 'onboard:gaps').maybeSingle()).data) {
     if (await askNextType(sb, chatId).catch(() => false)) sent.push('type')
   }

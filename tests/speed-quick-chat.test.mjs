@@ -138,7 +138,7 @@ test('/speed: the real reply times of his last messages, with the path that answ
   await nat('/speed')
   const m = last().text
   assert.match(m, /^⏱ <b>Reply times<\/b> \(your last 3 messages, newest first\)/)
-  assert.match(m, /“\/today”: reply \d+\.\d s · done \d+\.\d s · list/)
+  assert.match(m, /“\/today”: reply \d+\.\d s · done \d+\.\d s · command/)   // since item 5, Today’s own command
   assert.match(m, /“thanks”: reply \d+\.\d s · done \d+\.\d s · quick AI/)
   assert.match(m, /“\/speed”: reply \d+\.\d s · done \d+\.\d s · command/)
   assert.match(m, /<i>Typical first reply: .*quick AI \d+\.\d s/)

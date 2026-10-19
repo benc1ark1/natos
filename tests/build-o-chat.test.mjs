@@ -103,7 +103,7 @@ test('O4: gap questions: most important first, quick taps or typed answers, save
   await natsWeek()
   await q(`delete from telegram_sent where key = 'gaps:paused'`)   // the fixture pauses the questions
   const tue = past(2)
-  setClock(T().zonedToUTC(tue, '07:05'))
+  setClock(T().zonedToUTC(tue, '07:35'))   // (item 5: the morning is 07:30 now; questions only after it)
   try {
     const { askNextGap } = await import('../lib/telegram/gapask.ts')
     const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')
@@ -210,33 +210,41 @@ test('O6: the 07:00 brief and the pinned Today show the day in time order (routi
   const tue = past(2)
   await block({ date: tue, start: '16:25', end: '17:25', title: 'Upper @ PureGym Swiss Cottage', kind: 'training', target_id: upper.id })
   await block({ date: tue, start: '18:30', end: '19:15', title: 'Physics homework', kind: 'focus', task_id: hw.id })
-  setClock(T().zonedToUTC(tue, '07:00'))
+  // (item 5: the morning message is Today at 07:30: his plan's things with a tap each, and it is the pinned Today;
+  // the whole day in time order is /brief full)
+  setClock(T().zonedToUTC(tue, '07:30'))
   try {
     await tick(new Date())
-    const brief = chat.tg.sent().find((m) => m.text.startsWith('☀️'))
+    const brief = chat.tg.sent().find((m) => m.text.startsWith('📌 <b>Today'))
     show(brief)
-    assert.match(brief.text, /📋 <b>Your day<\/b> · 🧠(?:🟢|🟡|🔴) 💪(?:⚪|🟢|🟡|🔴)/)
+    assert.match(brief.text, /<i>🏫 School 08:45–16:00<\/i>/)
+    assert.match(brief.text, /<b>16:25<\/b> 🏋️ Upper @ PureGym Swiss Cottage <i>· 1h<\/i>\n {5}↳ leave school 16:10 \(15 min\)/)
+    assert.match(brief.text, /<b>18:30<\/b> 📌 Physics homework <i>· 45m<\/i>/)
+    assert.deepEqual(chat.tg.of('pinChatMessage').map((c) => c.body.message_id), [brief.message_id], 'the morning message is the pinned Today')
+    await nat('/brief full')
+    const full = chat.tg.sent().at(-1)
+    assert.match(full.text, /📋 <b>Your day<\/b> · 🧠(?:🟢|🟡|🔴) 💪(?:⚪|🟢|🟡|🔴)/)
     const order = ['☀️ Morning routine', '🏫 School', '🏋️ Upper @ PureGym Swiss Cottage', '📚 Physics homework', '🌙 Night routine']
-    const at = order.map((x) => brief.text.indexOf(x))
+    const at = order.map((x) => full.text.indexOf(x))
     assert.ok(at.every((i) => i > 0), `all there: ${at}`)
     assert.deepEqual([...at].sort((a, b) => a - b), at, 'in time order')
-    assert.match(brief.text, /16:25 🏋️ Upper @ PureGym Swiss Cottage <i>60m<\/i> <i>\(leave school 16:10, 15 min\)<\/i>/)
-    const pin = chat.tg.sent().find((m) => m.text.startsWith('📌'))
-    assert.match(pin.text, /🗓 <b>Your day<\/b>/)
-    // tick Upper on the brief: done, logged toward Upper; the pinned Today shows it ticked
+    assert.match(full.text, /16:25 🏋️ Upper @ PureGym Swiss Cottage <i>60m<\/i> <i>\(leave school 16:10, 15 min\)<\/i>/)
+    // tick Upper on the morning message: done, logged toward Upper; the pinned Today shows it ticked
     await tapOn(brief, '☐ 16:25 Upper')
     assert.equal((await q(`select status from plan_blocks where title like 'Upper%'`))[0].status, 'done')
     assert.equal((await q(`select count(*)::int n from target_logs where target_id = $1`, [upper.id]))[0].n, 1)
     assert.match(chat.tg.of('editMessageText').at(-1).body.text, /✅ <s>16:25 🏋️ Upper/)
-    assert.ok(chat.tg.of('editMessageReplyMarkup').some((c) => JSON.stringify(c.body.reply_markup).includes('✅ 16:25 Upper')), 'the brief’s button shows the tick')
+    assert.ok(JSON.stringify(chat.tg.of('editMessageText').at(-1).body.reply_markup).includes('✅ 16:25 Upper'), 'its button shows the tick')
     // untick: back to planned, the log goes
-    await tapOn(brief, '16:25 Upper')
+    await tapOn({ ...brief, reply_markup: chat.tg.of('editMessageText').at(-1).body.reply_markup }, '16:25 Upper')
     assert.equal((await q(`select status from plan_blocks where title like 'Upper%'`))[0].status, 'planned')
     assert.equal((await q(`select count(*)::int n from target_logs where target_id = $1`, [upper.id]))[0].n, 0)
   } finally { setClock(null) }
 })
 
-test('O12: at 21:00, what’s done and what isn’t; the rest moves to tomorrow with one ✅; Undo', { skip }, async () => {
+// (item 5: the evening message replaces the "move the rest? ✅" wrap-up: a tap per item; what isn't ticked rolls on to
+// tomorrow by itself — tests/today-chat.test.mjs has the roll-forward)
+test('O12: at 21:00, tap what you did (a tap per item, no ✅ card); once a day', { skip }, async () => {
   const { setClock } = await import('./support/clock.mjs')
   const { upper, hw } = await natsWeek()
   const tue = past(2)
@@ -247,15 +255,15 @@ test('O12: at 21:00, what’s done and what isn’t; the rest moves to tomorrow 
     await tick(new Date())
     const m = last()
     show(m)
-    assert.match(m.text, /🌙 <b>Today, wrapped up<\/b>\n✅ Done: Upper/)
-    assert.match(m.text, /⏭ Not done → tomorrow: Physics homework \d\d:\d\d/)
-    await tapOn(m, '✅ Move to tomorrow')
-    assert.equal((await q(`select on_date::text d from plan_blocks where id = $1`, [study.id]))[0].d, T().addDays(tue, 1))
-    await tap('Undo')
-    assert.equal((await q(`select on_date::text d from plan_blocks where id = $1`, [study.id]))[0].d, tue)
+    assert.match(m.text, /^🌙 <b>Tap what you did today<\/b> <i>\(1\/2 so far\)<\/i>\n✅ Upper @ PureGym Swiss Cottage\n☐ Physics homework\n\n<i>Anything not ticked moves to tomorrow by itself\.<\/i>$/)
+    assert.equal((await q(`select count(*)::int n from telegram_pending`))[0].n, 0, 'no ✅ card')
+    await tapOn(m, '☐ 18:30 Physics homework')
+    assert.equal((await q(`select status from plan_blocks where id = $1`, [study.id]))[0].status, 'done')
+    assert.equal((await q(`select status from tasks where id = $1`, [hw.id]))[0].status, 'completed', 'its task is done (archived)')
+    assert.match(chat.tg.of('editMessageText').at(-1).body.text, /^🌙 <b>All 2 done today\.<\/b> 👏/)
     // once a day
     await tick(new Date())
-    assert.equal(chat.tg.sent().filter((x) => /wrapped up/.test(x.text)).length, 1)
+    assert.equal(chat.tg.sent().filter((x) => /^🌙/.test(x.text)).length, 1)
   } finally { setClock(null) }
 })
 
@@ -264,21 +272,21 @@ test('O18: the first brief after this build brings, in order: the gap questions,
   await natsWeek()
   await q(`delete from telegram_sent where key like 'onboard:%' or key = 'gaps:paused'`)
   const mon = past(1)
-  setClock(T().zonedToUTC(mon, '07:00'))
+  setClock(T().zonedToUTC(mon, '07:30'))   // (item 5: the morning message is at 07:30)
   chat.ai.script(PLAN, () => ({ days: [], note: '', push_back: '' }))
   try {
     await tick(new Date())
-    // the week card plans with the AI, so it comes on the next tick (07:05)
-    setClock(T().zonedToUTC(mon, '07:05'))
+    // the week card plans with the AI, so it comes on the next tick (07:35)
+    setClock(T().zonedToUTC(mon, '07:35'))
     await tick(new Date())
     const texts = chat.tg.sent().map((m) => m.text)
     const at = (re) => texts.findIndex((t) => re.test(t))
-    const brief = at(/^☀️/), gaps = at(/I need a few details to plan your week properly — 2 min/), clean = at(/🧹 <b>Calendar clean-up<\/b>/), owen = at(/🗓 <b>Days to give Owen<\/b>/), week = at(/🗓 <b>Your week<\/b>/)
+    const brief = at(/^📌 <b>Today/), gaps = at(/I need a few details to plan your week properly — 2 min/), clean = at(/🧹 <b>Calendar clean-up<\/b>/), owen = at(/🗓 <b>Days to give Owen<\/b>/), week = at(/🗓 <b>Your week<\/b>/)
     assert.ok([brief, gaps, clean, owen, week].every((i) => i >= 0), `all sent: ${[brief, gaps, clean, owen, week]}`)
     assert.ok(brief < gaps && gaps < clean && clean < owen && owen < week, 'in that order')
     chat.noSurprises()
     // never again
-    setClock(T().zonedToUTC(mon, '07:10'))
+    setClock(T().zonedToUTC(mon, '07:40'))
     await tick(new Date())
     assert.equal(chat.tg.sent().filter((m) => /Calendar clean-up/.test(m.text)).length, 1)
   } finally { setClock(null) }

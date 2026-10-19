@@ -95,8 +95,12 @@ test('a greeting: "thanks"', { skip }, async () => {
 
 test('an instant list: /today', { skip }, async () => {
   await seed()
+  // (item 5) the day's first look plans and saves it, as the 07:30 message normally does: a few more reads and writes
+  await measure('/today (first look: plans the day)', () => chat.nat('/today'), 'simple', { models: [], waited: 8 })
+  assert.match(chat.tg.sent().at(-1).text, /^📌 <b>Today · /)
+  // after that, /today is the saved list
   await measure('/today', () => chat.nat('/today'), 'simple', { models: [], waited: 6 })
-  assert.match(last().text, /📍 <b>Today<\/b>/)
+  assert.match(chat.tg.sent().at(-1).text, /^📌 <b>Today · /)
 })
 
 test('an instant list in words: "what\'s in my inbox"', { skip }, async () => {

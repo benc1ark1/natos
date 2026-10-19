@@ -20,3 +20,18 @@ begin
   end if;
 end $$;
 create index if not exists plan_blocks_pick_idx on public.plan_blocks (user_id, on_date, pick_key) where pick_key is not null;
+
+-- What the list shows and what a tap moves forward (added with the Today build, 19 Oct 2026):
+alter table public.plan_blocks add column if not exists why text;                 -- one short reason: "test in 9 days · 🔴"
+alter table public.plan_blocks add column if not exists done_hint jsonb;          -- what "done" moves forward: {"kind":"topic","topicId":…,"step":4}
+alter table public.plan_blocks add column if not exists done_effect jsonb;        -- what a tap changed (so a second tap puts exactly that back)
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'plan_blocks_today2_check') then
+    alter table public.plan_blocks add constraint plan_blocks_today2_check check (
+      (why is null or char_length(why) <= 300)
+      and (done_hint is null or (jsonb_typeof(done_hint) = 'object' and pg_column_size(done_hint) <= 4000))
+      and (done_effect is null or (jsonb_typeof(done_effect) = 'object' and pg_column_size(done_effect) <= 8000)));
+  end if;
+end $$;

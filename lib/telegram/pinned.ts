@@ -2,7 +2,8 @@
 // One message per day, pinned quietly; edited in place (no buzz) only when its text actually changes:
 // right after a ✅ in the bot, on /pin, and on the 5-minute tick (dashboard changes, events passing).
 // It only shows fixed times ("leave by 17:35"), never countdowns, so it isn't edited every few minutes.
-// A new day's message is pinned from 07:00 (or as soon as Nat does something); yesterday's is unpinned, never deleted.
+// A new day's message is the morning message (07:30, lib/today/send.ts), or comes as soon as Nat does something;
+// yesterday's is unpinned, never deleted. (Item 5: it shows the Today list.)
 import 'server-only'
 import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -18,6 +19,9 @@ import { leaveBy, withTravel } from '../travel'
 import { editCard, esc, pin, send, unpin, type Button } from './api'
 import { claim, release } from './sent'
 import { loadViewData, type ViewData } from './views'
+import { loadToday } from '../today/load'
+import { todayButtons, todayHtml } from '../today/message'
+import { morningAt } from '../today/holidays'
 
 const PDOT = { rest: '⚪', low: '🟢', med: '🟡', high: '🔴' } as const
 /** When he's free after school today (the school block's end + the buffer), if it's a school day. */
@@ -87,24 +91,41 @@ type State = { today_message_id: number | null; today_date: string | null; today
 
 /**
  * Bring the pinned message up to date. `byNat`: Nat just did something, so a new day's message may be
- * started at any hour (the tick waits until 07:00). Never throws: the pin is a nice-to-have.
+ * started at any hour (the tick waits until the morning message). `fresh` (item 5): the morning message itself, a new
+ * message even if one was started earlier today. Never throws: the pin is a nice-to-have.
+ * Item 5: the pinned Today is the Today list (lib/today: ≤ 5 things with a tap each, the fixed line), the same as the
+ * 07:30 morning message, which it is; the old day timeline (buildPinned) is only the fallback if Today can't be worked out.
  */
-export async function refreshPinned(sb: SupabaseClient, chatId: number, now = new Date(), opts: { byNat?: boolean; startAfter?: string } = {}): Promise<'sent' | 'edited' | 'same' | 'waiting' | 'failed'> {
+export async function refreshPinned(sb: SupabaseClient, chatId: number, now = new Date(), opts: { byNat?: boolean; startAfter?: string; fresh?: boolean } = {}): Promise<'sent' | 'edited' | 'same' | 'waiting' | 'failed'> {
   try {
     const today = dateISOOf(now.toISOString())
     const { data: st } = await sb.from('telegram_state').select('today_message_id,today_date,today_hash').maybeSingle()
     if (!st) await sb.from('telegram_state').insert({ busy_until: null })   // first ever (ignore a race: the row is the same)
     const state = (st ?? { today_message_id: null, today_date: null, today_hash: null }) as State
     const d = await loadViewData(sb, today, now)
-    const body = buildPinned(d)
+    const sameDay = state.today_date === today && !!state.today_message_id && !opts.fresh
+    // a new day (or none yet): the tick waits until the morning message (on holidays, his holiday wake time)
+    if (!sameDay && !opts.byNat && !opts.fresh) {
+      const start = [opts.startAfter ?? '00:00', morningAt(d.planning, today)].sort().at(-1)!
+      if (timeOf(now) < start) return 'waiting'
+    }
+    let body: string, buttons: Button[][]
+    try {
+      // the morning message saves the day's list; other refreshes show it (or, before it's saved, what it would be)
+      const t = await loadToday(sb, { now, data: d, save: !!opts.fresh })
+      body = todayHtml(t.plan)
+      buttons = todayButtons(t.plan, 'm')
+    } catch {
+      body = buildPinned(d)
+      buttons = tickButtons(d.blocks ?? [], d.tasks, d.today)
+    }
     const hash = fingerprint(body)
     const text = `${body}\n<i>updated ${timeOf(now)}</i>`
-    const buttons = tickButtons(d.blocks ?? [], d.tasks, d.today)
 
-    if (state.today_date === today && state.today_message_id) {
+    if (sameDay) {
       if (state.today_hash === hash) return 'same'
       try {
-        await editCard(chatId, state.today_message_id, text, buttons)
+        await editCard(chatId, state.today_message_id!, text, buttons)
       } catch (e) {
         const msg = e instanceof Error ? e.message : ''
         if (/not modified/i.test(msg)) { await save(sb, { today_hash: hash }); return 'same' }
@@ -116,8 +137,6 @@ export async function refreshPinned(sb: SupabaseClient, chatId: number, now = ne
       return 'edited'
     }
 
-    // a new day (or none yet): the tick waits until the morning brief
-    if (!opts.byNat && opts.startAfter && timeOf(now) < opts.startAfter) return 'waiting'
     return await startNew(sb, chatId, today, text, hash, state.today_message_id, true, buttons)
   } catch {
     return 'failed'

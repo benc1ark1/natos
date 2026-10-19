@@ -78,7 +78,10 @@ test('/coming and /today, no AI', { skip }, async () => {
   await nat('/coming')
   assert.match(last().text, /Physics test<\/b>/)
   assert.match(last().text, /<b>SMC past paper<\/b>/)
+  // (item 5: /today is the Today list with a tap each; the whole rest of the day is "today" in words)
   await nat('/today')
+  assert.match(last().text, /^📌 <b>Today · /)
+  await nat('what is on today')
   assert.match(last().text, /📍 <b>Today<\/b>/)
   assert.match(last().text, /🕒 <b>Free<\/b>:/)
   noAI()
@@ -142,7 +145,7 @@ test('while a card is waiting, "today" is a change to the card, not the Today li
 
 test('the morning brief has one push-back line', { skip }, async () => {
   await seedWeek()
-  await nat('/brief')
+  await nat('/brief full')   // (item 5: the whole-day brief; the morning message is Today)
   assert.match(last().text, /🤔 “SMC past paper” has been put off 3 times: do it today, or drop it\?/)
   assert.equal((last().text.match(/🤔/g) ?? []).length, 1)
   noAI()

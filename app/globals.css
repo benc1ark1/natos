@@ -581,3 +581,75 @@ button.wn:hover { text-decoration: underline; text-underline-offset: 3px; }
 .mtopic .usub { font-size: 12px; flex: none; }
 .mpick { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 10px 30px; }
 @media (max-width: 480px) { .mtopic .usub { display: none; } }
+
+/* ---------- Today (item 5): Home's first card, the same list as the 07:30 morning message ---------- */
+.s8 { grid-column: span 8; } .s4 { grid-column: span 4; }
+.todaycard { padding-bottom: 16px; }
+.todaycard .ch { margin-bottom: 6px; }
+.todaycard h2.lbl { margin: 0; }
+.tmode { color: var(--mint); }
+.tfixed { margin: 0 0 10px; font-size: 13.5px; line-height: 1.5; color: var(--muted); }
+.tnote { margin: 0 0 8px; font-size: 14px; color: #f2c08a; }
+.tlist { list-style: none; margin: 0; padding: 0; }
+.titem { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; padding: 14px 0; border-top: 1px solid var(--line-soft); transition: opacity .15s; }
+.titem:first-child { border-top: 0; }
+.tcheck { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; margin: -6px 0 0 -10px; }
+.tcheck .chk { width: 26px; height: 26px; border-radius: 8px; }
+.tcheck:hover:not(:disabled) .chk { border-color: rgba(111,211,178,0.75); }
+.tcheck:disabled:not([aria-pressed="true"]) .chk { border-style: dashed; }
+.ttop { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.ttime { font-size: 13px; letter-spacing: .04em; color: var(--mint-soft); white-space: nowrap; }
+.tkind { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted-2); white-space: nowrap; }
+.tdur { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ttl { margin-top: 3px; font-size: 16.5px; line-height: 1.35; font-weight: 500; color: var(--fg-hi); overflow-wrap: anywhere; }
+.topen { margin-top: 7px; padding-left: 12px; border-left: 2px solid rgba(111,211,178,0.35); font-size: 14px; line-height: 1.45; color: var(--fg-2); overflow-wrap: anywhere; }
+.topen a { color: var(--mint-soft); text-underline-offset: 3px; }
+.twhy { margin-top: 6px; font-size: 12.5px; color: var(--muted-2); }
+.titem.done .ttl { font-weight: 400; color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(255,255,255,0.3); }
+.titem.done .ttime, .titem.done .tdur { color: var(--muted-2); }
+.tmore { margin-top: 6px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.thidden { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 10px; }
+.thidden li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.thidden .ttl { margin: 0; font-size: 14.5px; color: var(--fg-2); font-weight: 400; }
+.thidden .topen { flex-basis: 100%; margin-top: 2px; font-size: 13px; }
+.s4 > .remline { height: 100%; }
+.morebar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.morebar .chev { margin-left: 10px; font-size: 12px; }
+.morehint { text-transform: none; letter-spacing: .03em; color: var(--dim); }
+
+/* ---------- polish (item 5): calmer phone layout, readable tab bar ---------- */
+.tabbar a svg, .tabbar button svg { display: none; }
+.moresheet { display: none; }
+@media (max-width: 960px) {
+  .s8, .s4 { grid-column: span 12; }
+  .grid { gap: 14px; }
+  .col { gap: 14px; }
+  .sess { gap: 16px 16px; padding: 18px; }
+  .greet { font-size: 32px; }
+  .time { font-size: 22px; margin-bottom: 6px; }
+  .remline { padding: 10px 18px; }
+  .tabbar { padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px)); }
+  .tabbar { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .tabbar a, .tabbar button { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 3px; min-height: 54px; min-width: 0; padding: 0 1px; border-radius: 10px; font-family: var(--sans); font-size: 10.5px; letter-spacing: 0; text-transform: none; color: var(--muted-2); text-decoration: none; overflow: hidden; white-space: nowrap; }
+  .tabbar a svg, .tabbar button svg { display: block; flex-shrink: 0; }
+  .tabbar a span, .tabbar button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .tabbar a.on, .tabbar button.on { color: #d6f3e9; background: rgba(111,211,178,0.12); }
+  .moresheet { display: block; position: fixed; inset: 0; z-index: 39; background: rgba(0,0,0,0.5); }
+  .morelist { position: fixed; right: 8px; bottom: calc(70px + env(safe-area-inset-bottom, 0px)); min-width: 200px; display: flex; flex-direction: column; padding: 6px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.1); background: #0c1211; box-shadow: 0 24px 60px -16px rgba(0,0,0,0.9); }
+  .morelist a { display: flex; align-items: center; min-height: 48px; padding: 0 14px; border-radius: 10px; font-size: 15px; color: var(--fg-2); text-decoration: none; }
+  .morelist a.on { color: #d6f3e9; background: rgba(111,211,178,0.12); }
+  .morehint { display: none; }
+  .morebar .btn { flex: 1; }
+}
+@media (max-width: 480px) {
+  .card { padding: 16px; border-radius: 18px; }
+  .pagetitle { font-size: 32px; }
+  .ttl { font-size: 16px; }
+}
+/* the top bar with 8 sections + Help: the clock moves out of the bar on narrower desktops (it's on Home anyway) */
+@media (max-width: 1440px) {
+  .navr .date { display: none; }
+  .navlink { padding: 0 10px; }
+  .nav { gap: 16px; }
+}
+.navr a.signout { text-decoration: none; }

@@ -93,7 +93,7 @@ export type Programme = {
 /** A temporary rule (plans/contracts.md §3.6). target: 'act' · 'ahead' · 'stretch' · 'reviews' · 'physics' · 'programme:<name>' · 'subjects:Maths,Physics' · 'subject:<name>' */
 export type PlanRule = { id: string; words: string; kind: 'boost' | 'pause' | 'cap' | 'note'; target: string; minutes: number | null; startsOn: string; endsOn: string }
 
-export type HomeworkTask = { id: string; title: string; subjectId: string | null; subject: string | null; dueAt: string | null; minutes: number | null }
+export type HomeworkTask = { id: string; title: string; subjectId: string | null; subject: string | null; dueAt: string | null; minutes: number | null; details?: string | null }
 
 /** Links from the "Start here" tab (yellow cells), editable in settings. Empty = not pasted yet. */
 export type TrackerLinks = { bicenPure: string; bicenStats: string; bicenMech: string; bicenCorePure: string; bicenMemorise: string; bicenSummaries: string; bicenHardest: string; integralFurther: string; integralAssessments: string; madas: string; step: string; pmtPhysics: string; isaac: string; amsp: string }

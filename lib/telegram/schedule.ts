@@ -5,7 +5,7 @@
 // - Gap questions: a round after the brief and after school, one at a time (lib/telegram/gapask.ts).
 // - A low-Whoop morning, or his calendar changing under an applied week: a short "moved X — ✅?" card.
 // - Sunday at his week-reset time: the Your week card for the coming week.
-// - At the end-of-day time: what's done, and what isn't moved to tomorrow with one ✅.
+// - At the end-of-day time: the evening message (item 5): tap what you did; the rest rolls on by itself.
 // - Once a day: if his weekly pattern changed, whether Owen's days still fit.
 import 'server-only'
 import { createHash } from 'node:crypto'
@@ -13,22 +13,18 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { checkinRange } from '../ask/week'
 import { loadPlannerContext } from '../ask/server'
 import { expandEvents, isSchool } from '../events'
-import { freeDays } from '../freetime'
 import { moreSettings } from '../settings'
-import { boundsOf, hm, parseSessionTitle } from '../setup'
-import { addDays, dowShort, isoDow, minutesOf, timeOf } from '../time'
-import { minus } from '../week'
-import { deadlineOf } from '../tasks'
+import { addDays, isoDow, minutesOf, timeOf } from '../time'
 import { isLowRecovery, whoopDay } from '../whoop/sync'
-import { esc } from './api'
 import { askNextGap } from './gapask'
 import { sendCleanup } from './cleanup'
 import { proposeOwenDays, recheckOwen } from './owen'
 import { refitAfterChange } from './refit'
 import { claim, release } from './sent'
-import { plain, say } from './turns'
 import { loadViewData, type ViewData } from './views'
 import { proposeYourWeek } from './yourweek'
+import { morningAt } from '../today/holidays'
+import { sendEvening, sendMorning } from '../today/send'
 
 /** Is it at or after `at`, within `span` minutes? */
 const within = (now: string, at: string, span: number) => minutesOf(now) >= minutesOf(at) && minutesOf(now) < minutesOf(at) + span
@@ -48,7 +44,9 @@ export async function proactive(sb: SupabaseClient, chatId: number, nowDate: Dat
   const s = moreSettings(planning)
   const now = timeOf(nowDate)
   const sent: string[] = []
-  const quiet = minutesOf(now) >= minutesOf(s.quietFrom) || minutesOf(now) < minutesOf(s.briefAt)
+  // (item 5: the morning ends at the morning message's time: on holidays, his holiday wake time)
+  const morning = morningAt(planning, today)
+  const quiet = minutesOf(now) >= minutesOf(s.quietFrom) || minutesOf(now) < minutesOf(morning)
   let data: ViewData | null = null
   const view = async () => (data ??= await loadViewData(sb, today, nowDate))
   const inSchool = async () => {
@@ -58,13 +56,17 @@ export async function proactive(sb: SupabaseClient, chatId: number, nowDate: Dat
   }
   const step = async (name: string, run: () => Promise<boolean | void>) => { try { if (await run()) sent.push(name) } catch { /* one failing never stops the rest */ } }
 
-  // the end-of-day wrap-up (its own time, an hour to catch a missed tick)
-  if (within(now, s.endOfDayAt, 60)) await step('wrapup', () => once(sb, `eod:${today}`, async () => { await wrapUp(sb, chatId, await view(), nowDate) }))
+  // item 5: the morning message (Today, pinned) goes first, so whatever else the morning brings comes after it
+  if (within(now, morning, 180)) await step('morning', () => sendMorning(sb, chatId, nowDate))
+
+  // the evening message (its own time, an hour to catch a missed tick). Item 5: a tap per Today item; whatever isn't
+  // ticked rolls on to tomorrow by itself (lib/today/send.ts), in place of the old "move the rest? ✅" wrap-up
+  if (within(now, s.endOfDayAt, 60)) await step('wrapup', () => once(sb, `eod:${today}`, async () => { await sendEvening(sb, chatId, nowDate) }))
   if (quiet) return sent
 
   // right after this build's first brief: the gap questions first (so the week uses his answers), then the clean-up,
   // Owen's days and this week's card (sent again once he has answered: lib/telegram/refit.ts)
-  const briefed = within(now, s.briefAt, 180) && await has(sb, `brief:${today}`)
+  const briefed = within(now, morning, 180) && await has(sb, `brief:${today}`)
   if (briefed && !(await inSchool())) {
     const before = sent.length
     await step('onboard:gaps', () => once(sb, 'onboard:gaps', async () => { await askNextGap(sb, chatId, nowDate, { intro: true, data: await view() }) }))
@@ -110,69 +112,4 @@ export async function proactive(sb: SupabaseClient, chatId: number, nowDate: Dat
   // once a day, after school: does his weekly pattern still suit Owen's days?
   if (minutesOf(now) >= 16 * 60) await step('owen', async () => (await claim(sb, `owen-day:${today}`)) && recheckOwen(sb, chatId, await view()))
   return sent
-}
-
-// ---------------------------------------------------------------------------
-// The end-of-day wrap-up
-// ---------------------------------------------------------------------------
-
-/** What's done today, and what isn't, moved to tomorrow's free time with one ✅ (study and training alike). */
-export async function wrapUp(sb: SupabaseClient, chatId: number, d: ViewData, nowDate: Date): Promise<boolean> {
-  const now = timeOf(nowDate)
-  const done = d.blocks.filter((b) => b.status === 'done')
-  const missed = d.blocks.filter((b) => b.status === 'planned' && b.start_time < now && b.kind !== 'rest')
-  // due today and not done (one with a missed block is in the "not done" line instead)
-  const inMissed = new Set(missed.map((b) => b.task_id).filter(Boolean))
-  const open = d.tasks.filter((t) => t.importance === 'must' && t.due_at && t.due_at.slice(0, 10) === d.today && t.status !== 'completed' && !inMissed.has(t.id))
-  if (!done.length && !missed.length && !open.length) return false
-  const name = (t: string) => parseSessionTitle(t).name
-  const lines = ['🌙 <b>Today, wrapped up</b>']
-  if (done.length) lines.push(`✅ Done: ${esc(done.map((b) => name(b.title)).join(', '))}`)
-  if (open.length) lines.push(`📌 Still open (due today): ${esc(open.map((t) => t.title).join(', '))}`)
-  if (!missed.length) {
-    lines.push(done.length ? '<i>Everything in the plan done. 👏</i>' : '')
-    await say(sb, chatId, lines.filter(Boolean).join('\n'), undefined, { intent: 'plan' })
-    return true
-  }
-  // the next free time that fits (after school on school days), tomorrow first, then the two days after
-  const s = { ...d.settings, dayBounds: boundsOf(d.shapes) }
-  const moves = []
-  const left: string[] = []
-  const taken = new Map<string, [number, number][]>()
-  for (const b of missed) {
-    const len = minutesOf(b.end_time) - minutesOf(b.start_time)
-    const heavy = b.kind === 'focus' || b.kind === 'training'
-    // never after it's due: homework by its deadline (overdue: tomorrow), test prep before the test
-    const task = b.task_id ? d.tasks.find((t) => t.id === b.task_id) : null
-    const due = task ? deadlineOf(task) : null
-    const test = b.goal_id ? d.goals.find((g) => g.id === b.goal_id)?.target_date ?? null : null
-    const last = test ? addDays(test, -1) : due ? (due > d.today ? due : addDays(d.today, 1)) : addDays(d.today, 3)
-    let found: { date: string; start: string; end: string } | null = null
-    for (let k = 1; k <= 3 && !found && addDays(d.today, k) <= last; k++) {
-      const date = addDays(d.today, k)
-      const [f] = freeDays(d.events, d.changes, date, date, s, d.today, 0, d.travel ?? null)
-      if (!taken.has(date)) {
-        const { data: there } = await sb.from('plan_blocks').select('start_time,end_time').eq('on_date', date).eq('status', 'planned')
-        taken.set(date, ((there ?? []) as { start_time: string; end_time: string }[]).map((x) => [minutesOf(x.start_time.slice(0, 5)), minutesOf(x.end_time.slice(0, 5)) + s.bufferMin]))
-      }
-      const school = expandEvents(d.events, date, date, d.changes).filter((o) => o.date === date && !o.cancelled && o.event.is_busy && isSchool(o.event) && o.end).map((o) => o.end!).sort().at(-1)
-      const slot = minus(f.slots, taken.get(date)!).filter((x) => !school || x.start >= school)
-        .find((x) => minutesOf(x.end) - minutesOf(x.start) >= len && (!heavy || minutesOf(x.start) + len <= minutesOf(s.heavyUntil)))
-      if (slot) {
-        found = { date, start: slot.start, end: hm(minutesOf(slot.start) + len) }
-        taken.get(date)!.push([minutesOf(found.start), minutesOf(found.end) + s.bufferMin])
-      }
-    }
-    if (!found) { left.push(`${name(b.title)}${test ? ` (the test is ${dowShort(test)})` : due ? ` (due ${dowShort(due)})` : ''}`); continue }
-    moves.push({ blockId: b.id, title: b.title, from: `${dowShort(d.today)} ${b.start_time}`, to: { date: found.date, start: found.start, end: found.end, title: b.title, kind: b.kind }, reason: 'not done today' })
-  }
-  const tomorrow = addDays(d.today, 1)
-  if (moves.length) lines.push(`⏭ Not done → ${moves.every((m) => m.to.date === tomorrow) ? 'tomorrow' : 'the next free time'}: ${esc(moves.map((m) => `${name(m.title)} ${m.to.date === tomorrow ? '' : `${dowShort(m.to.date)} `}${m.to.start}`).join(', '))}`)
-  if (left.length) lines.push(`⚠️ No free time before it’s needed for: ${esc(left.join(', '))}. Tonight, before school, or drop something?`)
-  if (!moves.length) { await say(sb, chatId, lines.join('\n'), undefined, { intent: 'plan' }); return true }
-  const payload = { date: tomorrow, energy: 'normal', energyGiven: false, add: true, blocks: [], unplaced: [], note: '', pushBack: '', ripple: { moves, warnings: [], tbc: [] }, summary: plain(lines.join('\n')) }
-  const { data: row } = await sb.from('telegram_pending').insert({ kind: 'plan', text: 'end of day', payload }).select('id').single()
-  if (!row) throw new Error('Couldn’t hold the wrap-up')
-  await say(sb, chatId, `${lines.join('\n')}\n\n✅ to move ${moves.length === 1 ? 'it' : 'them'}?`, [[{ text: moves.every((m) => m.to.date === tomorrow) ? '✅ Move to tomorrow' : '✅ Move them', callback_data: `a:${row.id}` }, { text: '❌ Leave them', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'plan' })
-  return true
 }
