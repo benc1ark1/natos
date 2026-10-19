@@ -1,0 +1,10 @@
+{
+  "name": "natos-localdb",
+  "private": true,
+  "description": "Local stand-in for the Supabase test database (Postgres + PostgREST + a small fake auth). Test-only.",
+  "type": "module",
+  "dependencies": {
+    "embedded-postgres": "17.10.0-beta.17",
+    "pg": "8.23.1"
+  }
+}

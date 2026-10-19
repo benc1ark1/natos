@@ -20,6 +20,7 @@ import { loadConnection } from '../integrations/store'
 import { syncGoogle } from '../google/sync'
 import { isLowRecovery, syncWhoop, whoopDay, whoopWords } from '../whoop/sync'
 import { enqueue, extendLock, isDone, nextQueued, releaseLock, say, setStatus, takeLock, type TurnRow } from './turns'
+import { pluginCommand, pluginCommands } from './plugins'
 
 export const appUrl = () => {
   const host = process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -43,13 +44,20 @@ export const HELP = [
   '<i>The full guide is docs/GUIDE.md.</i>',
 ].join('\n')
 
-/** The commands in Telegram's “/” menu (set once, with the menu button). */
-export const COMMANDS = [
+/** The commands in Telegram's “/” menu (set once, with the menu button). Plug-in commands replace a built-in one of the same name. */
+const BUILTIN_COMMANDS = [
   ['today', 'The rest of today'], ['week', 'The next 7 days'], ['coming', 'Deadlines, tests and events soon'], ['free', 'Free time (add a day)'],
   ['inbox', 'Your Inbox'], ['brief', 'Today’s brief'], ['pin', 'Refresh the pinned Today'], ['app', 'Open the dashboard'],
   ['google', 'Google Calendar status'], ['sync', 'Sync Google Calendar now'], ['whoop', 'Whoop recovery'], ['mail', 'Email watcher'],
   ['maths', 'Maths tracker'], ['ideas', 'Things I can’t do yet'], ['usage', 'AI spend'], ['cancel', 'Drop the open card'], ['help', 'How to use me'],
 ].map(([command, description]) => ({ command, description }))
+export const COMMANDS = (() => {
+  const extra = pluginCommands()
+  const names = new Set(extra.map((c) => c.command))
+  const help = BUILTIN_COMMANDS.filter((c) => c.command === 'help' && !names.has('help'))
+  // Telegram allows up to 100; the built-in ones first (except /help, kept last), then the plug-ins'
+  return [...BUILTIN_COMMANDS.filter((c) => !names.has(c.command) && c.command !== 'help'), ...extra, ...help].slice(0, 100)
+})()
 
 const MAX_RUN_MS = 100_000   // stop starting new messages after this; the next message picks up the rest
 const WAIT_MS = 60_000       // how long a message waits for the one before it to finish
@@ -128,6 +136,14 @@ async function respond(sb: SupabaseClient, chatId: number, turn: TurnRow): Promi
   const text = turn.text
   const ctx = { claim: (key: string) => claim(sb, key) }
   if (!text.startsWith('/')) return converse(sb, chatId, turn, ctx)
+
+  // a plug-in's command (lib/telegram/plugins) wins over a built-in one of the same name
+  const pc = pluginCommand(text)
+  if (pc) {
+    const out = await pc.run({ sb, chatId, today: todayISO(), now: new Date(), args: pc.args, appUrl: appUrl() })
+    if (out) await say(sb, chatId, out.html, out.buttons)
+    return 'command'
+  }
 
   if (/^\/ask\b/.test(text)) return converse(sb, chatId, turn, { ...ctx, forceQuestion: true })
   if (/^\/(inbox|week|coming|free|postponed|next|today|maths)\b/.test(text)) return converse(sb, chatId, turn, ctx)   // instant lists

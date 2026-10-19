@@ -5,11 +5,12 @@
 // - reset(): empties every table and adds a little made-up data (subjects, a profile).
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import pg from 'pg'
 import { createClient } from '@supabase/supabase-js'
 
-const ROOT = new URL('../../', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
 export const SQL_FILES = [
   'assets/supabase-schema.sql',
@@ -39,6 +40,14 @@ export const SQL_FILES = [
   'supabase/build-n.sql',
   'supabase/build-o.sql',
   'supabase/maths.sql',
+  // overnight build (19 Oct 2026): one file per queue item, in merge order
+  'supabase/tracker.sql',
+  'supabase/act.sql',
+  'supabase/speed.sql',
+  'supabase/life.sql',
+  'supabase/today.sql',
+  'supabase/gym.sql',
+  'supabase/weekly.sql',
 ]
 
 function readEnvFile(file) {

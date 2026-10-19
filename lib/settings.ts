@@ -3,14 +3,15 @@
 // Pure: no database.
 import { planningSettings } from './freetime'
 import { travelSettings } from './travel'
+import { EXTRA_SETTINGS } from './settings-extra'
 
 type Kind = 'time' | 'minutes' | 'number' | 'choice' | 'text' | 'list'
-export type Group = 'you' | 'day' | 'week' | 'planning' | 'messages' | 'training' | 'load' | 'mental' | 'optimiser' | 'study' | 'tests' | 'travel'
-type Spec = { label: string; kind: Kind; group: Group; min?: number; max?: number; choices?: string[]; help?: string }
+export type Group = 'you' | 'day' | 'week' | 'planning' | 'messages' | 'training' | 'load' | 'mental' | 'optimiser' | 'study' | 'tests' | 'travel' | 'act' | 'gym'
+export type Spec = { label: string; kind: Kind; group: Group; min?: number; max?: number; choices?: string[]; help?: string }
 
 export const DAYS_OF_WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 
-export const SETTINGS: Record<string, Spec> = {
+const CORE_SETTINGS: Record<string, Spec> = {
   about: { label: 'About you (the AI reads this)', kind: 'text', group: 'you', max: 600, help: 'Who you are, in a sentence or two: school year, subjects, sport.' },
   // your day (Build O): every day is built around the morning and night routines; wake and bed are protected
   wakeAt: { label: 'Wake up on school days', kind: 'time', group: 'day' },
@@ -107,6 +108,12 @@ export const SETTINGS: Record<string, Spec> = {
   maxTravelMin: { label: 'Longest trip each way to a training session', kind: 'minutes', group: 'travel', max: 120 },
 }
 
+/** Every setting: the core ones, then the queue items' (lib/settings-extra.ts). */
+export const SETTINGS: Record<string, Spec> = {
+  ...CORE_SETTINGS,
+  ...Object.fromEntries(Object.entries(EXTRA_SETTINGS).filter(([k]) => !(k in CORE_SETTINGS)).map(([k, x]) => { const { default: _d, ...spec } = x; return [k, spec] })),
+}
+
 export type MoreSettings = {
   about: string; hardSubjects: string; todayMax: number; pushBackAfter: number
   briefAt: string; nudgeAt: string; checkinDay: string; leaveAlertMin: number; trainingFrom: string; prepMinutes: number
@@ -144,14 +151,20 @@ export const DEFAULT_MORE: MoreSettings = {
   wLighter: 5, wGame: 15, wArea: 10, wCnsRow: 12, wTired: 20, wLeaveOut: 40, wAvoid: 15, wPrefer: 4, wSameDay: 3,
 }
 
+/** The defaults with the queue items' settings added (lib/settings-extra.ts). */
+const ALL_DEFAULTS: Record<string, string | number> = {
+  ...Object.fromEntries(Object.entries(EXTRA_SETTINGS).filter(([k]) => !(k in CORE_SETTINGS)).map(([k, x]) => [k, x.default])),
+  ...(DEFAULT_MORE as unknown as Record<string, string | number>),
+}
+
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
 const obj = (raw: unknown) => (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
 
 /** The settings beyond free time and travel, each checked (odd or missing = the default). */
-export function moreSettings(raw: unknown): MoreSettings {
+export function moreSettings(raw: unknown): MoreSettings & Record<string, string | number> {
   const o = obj(raw)
-  const out = { ...DEFAULT_MORE } as Record<string, string | number>
-  for (const k of Object.keys(DEFAULT_MORE)) {
+  const out = { ...ALL_DEFAULTS }
+  for (const k of Object.keys(ALL_DEFAULTS)) {
     const s = SETTINGS[k], v = o[k]
     if (v === undefined || v === null) continue
     if (s.kind === 'time' && typeof v === 'string' && HHMM.test(v)) out[k] = v
@@ -159,8 +172,11 @@ export function moreSettings(raw: unknown): MoreSettings {
     else if (s.kind === 'choice' && typeof v === 'string' && s.choices!.includes(v)) out[k] = v
     else if ((s.kind === 'text' || s.kind === 'list') && typeof v === 'string' && v.trim() && v.length <= (s.max ?? 500)) out[k] = v.trim()
   }
-  return out as unknown as MoreSettings
+  return out as unknown as MoreSettings & Record<string, string | number>
 }
+
+/** One setting's value now (his, else the default), for the queue items' own settings. */
+export const setting = <T extends string | number>(planning: unknown, key: string): T => moreSettings(planning)[key] as T
 
 /** Every setting as it is now (his value, else the default). */
 export const currentSettings = (planning: unknown): Record<string, string | number> => {

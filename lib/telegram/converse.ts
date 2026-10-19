@@ -7,7 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordUsage, budget } from '../ai/usage'
 import { loadPlannerContext, type PlannerContext } from '../ask/server'
 import type { AskAnswer } from '../ask/types'
-import { todayISO } from '../time'
+import { todayISO, weekStartISO } from '../time'
 import { esc, typing, type Button } from './api'
 import { looksLikeMeta, looksLikePartialEdit, think, type Decision } from './brain'
 import { checkActions, loadRows } from './actions'
@@ -21,6 +21,8 @@ import { askNextGap, typedGapAnswer } from './gapask'
 import { claim, release } from './sent'
 import { renderAny, weekPlanForAI } from './views-more'
 import { proposeOwenDays } from './owen'
+import { pluginFor, runFast } from './plugins'
+import type { FastResult } from './plugin-types'
 
 export type Outcome = Decision['intent'] | 'failed'
 
@@ -65,6 +67,13 @@ export async function converse(sb: SupabaseClient, chatId: number, turn: TurnRow
       await typing(chatId)
       await proposeOwenDays(sb, chatId, await loadViewData(sb, today))
       return 'question'
+    }
+    // plug-ins (lib/telegram/plugins): messages they understand without the AI ("matrices 🟢", "bench 80x5x3"):
+    // instant and free, and still the usual ✅ card for any change
+    const fast = await runFast(message, { sb, chatId, today, now: new Date(), cardOpen: !!card, cardEditing: card?.status === 'editing' })
+    if (fast) {
+      const out = await useFast(sb, chatId, message, fast.result)
+      if (out) return out
     }
   }
 
@@ -175,6 +184,25 @@ async function proposeChanges(sb: SupabaseClient, chatId: number, message: strin
   }
   // what it knocks on in this week's plan, or two options if it clashes with another session (lib/telegram/ripple.ts)
   await actionCard(sb, chatId, message, actions, problems, { replaces, asks, ...(await planEffect(sb, actions, data)) })
+  return 'instruction'
+}
+
+/**
+ * What a plug-in's fast path understood. Changes are checked exactly like the brain's (no snapshot needed: a plug-in's
+ * refs are its own) and shown on the usual card; if none of them survive the checks, the brain reads the message instead.
+ */
+async function useFast(sb: SupabaseClient, chatId: number, message: string, r: FastResult): Promise<Outcome | null> {
+  if (r.kind === 'handled') return 'question'
+  if (r.kind === 'answer') { await say(sb, chatId, r.html, r.buttons, { intent: 'question' }); return 'question' }
+  if (r.kind === 'idea') { await saveIdea(sb, chatId, r.request, message); return 'app_idea' }
+  const today = todayISO()
+  const ctx: PlannerContext = { today, weekStart: weekStartISO(today), snapshot: '', refs: new Map() }
+  const raw = r.actions.map((a) => ({ op: a.op, ref: a.ref ?? '', value: a.value ?? '', date: a.date ?? '', date_to: a.date_to ?? '', time: a.time ?? '', time_to: a.time_to ?? '', number: a.number ?? 0, words: a.words ?? '' }))
+  const rows = await loadRows(sb, raw, ctx)
+  const { actions, problems } = checkActions(raw, ctx, rows, message, today)
+  if (!actions.length) return null
+  const builtIn = actions.some((a) => !pluginFor(a.op))
+  await actionCard(sb, chatId, message, actions, problems, { ...(r.head ? { head: r.head } : {}), ...(builtIn ? await planEffect(sb, actions) : {}) })
   return 'instruction'
 }
 

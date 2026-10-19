@@ -13,10 +13,18 @@ import { autoStatus, deadlineLabel } from '../tasks'
 import { dowShort, dueAtFromDate, shortDate, timeOf, dateISOOf, todayISO, weekStartISO, zonedToUTC } from '../time'
 import type { Project, Reminder, Task, TaskStatus, WeeklyTarget } from '../types'
 import { C2_OPS, GUIDE_OPS, STUDY_OPS, applyC2, checkC2, loadC2Rows, undoC2, type C2Applied, type C2Op, type C2Rows } from './actions-c2'
+import { PLUGIN_OPS, PLUGINS, pluginFor } from './plugins'
+import type { PluginAction, PluginApplied } from './plugin-types'
 
-export const OPS = ['complete', 'move', 'due', 'drop', 'star', 'unstar', 'minutes', 'importance', 'project', 'rename',
+export const BUILTIN_OPS = ['complete', 'move', 'due', 'drop', 'star', 'unstar', 'minutes', 'importance', 'project', 'rename',
   'reminder_done', 'reminder_when', 'project_new', 'project_archive', 'target_week', ...C2_OPS] as const
-export type Op = (typeof OPS)[number]
+export type Op = (typeof BUILTIN_OPS)[number]
+/** Every change the brain may send: the built-in ones, then the plug-ins' (lib/telegram/plugins). */
+export const OPS: readonly string[] = (() => {
+  const clash = PLUGIN_OPS.filter((op) => (BUILTIN_OPS as readonly string[]).includes(op))
+  if (clash.length) throw new Error(`plug-in ops clash with built-in ones: ${clash.join(', ')}`)
+  return [...BUILTIN_OPS, ...PLUGIN_OPS]
+})()
 const isC2 = (op: string): op is C2Op => (C2_OPS as readonly string[]).includes(op)
 
 /** What the brain sends for each change ("" / 0 = not used). date_to / time_to: where an event moves to, or its end. */
@@ -69,6 +77,7 @@ const norm = (s: string) => s.toLowerCase().replace(/[’']/g, '').replace(/[^a-
 // ---------------------------------------------------------------------------
 
 export type Rows = { tasks: Map<string, Task>; reminders: Map<string, Reminder>; projects: Map<string, Project>; targets: Map<string, WeeklyTarget> } & Partial<C2Rows>
+  & { plugins?: Record<string, unknown> }   // what each plug-in read for its changes (by plug-in name)
 
 /** Load the records the proposed changes point at (as Nat: row level security means only his). */
 export async function loadRows(sb: SupabaseClient, raw: RawAction[], ctx: PlannerContext): Promise<Rows> {
@@ -79,6 +88,9 @@ export async function loadRows(sb: SupabaseClient, raw: RawAction[], ctx: Planne
     if (error) throw new Error(`Couldn’t read ${table}: ${error.message}`)
     return new Map(((data ?? []) as (T & { id: string })[]).map((r) => [r.id, r as T]))
   }
+  // each plug-in reads what its own changes need
+  const pluginRows = Promise.all(PLUGINS.filter((p) => p.loadRows && raw.some((a) => p.ops?.includes(a.op)))
+    .map(async (p) => [p.name, await p.loadRows!(sb, raw.filter((a) => p.ops!.includes(a.op)), todayISO())] as const))
   const [tasks, reminders, projects, targets, c2] = await Promise.all([
     get<Task>('tasks', ids('task')), get<Reminder>('reminders', ids('reminder')),
     sb.from('projects').select('*').is('archived_at', null).then((r) => new Map(((r.data ?? []) as Project[]).map((p) => [p.id, p]))),
@@ -87,7 +99,7 @@ export async function loadRows(sb: SupabaseClient, raw: RawAction[], ctx: Planne
     loadC2Rows(sb, raw.some((a) => a.op === 'travel_set' || a.op === 'school_day') ? 'all' : ids('event'), ids('goal'), todayISO(), ids('target'), raw.some((a) => STUDY_OPS.includes(a.op)), raw.some((a) => GUIDE_OPS.includes(a.op) || a.op === 'guide_set'),
       { blockIds: ids('block'), archivedIds: ids('archived') }),
   ])
-  return { tasks, reminders, projects, targets, ...c2 }
+  return { tasks, reminders, projects, targets, ...c2, plugins: Object.fromEntries(await pluginRows) }
 }
 
 /** Are these date words really his? (in his message or something he said in the last 30 minutes) */
@@ -103,13 +115,22 @@ export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, 
   const newProjects = new Set(raw.filter((a) => a.op === 'project_new' && (a.value ?? '').trim()).map((a) => norm(a.value.trim().slice(0, 80))))
 
   for (const a of raw.slice(0, MAX_ACTIONS)) {
-    const op = (OPS as readonly string[]).includes(a.op) ? (a.op as Op) : null
+    const op = OPS.includes(a.op) ? (a.op as Op) : null
     if (!op) { problems.push(`unknown change “${a.op}”`); continue }
     const key = JSON.stringify([op, a.ref, a.value, a.date, a.time, a.number])
     if (seen.has(key)) continue
     seen.add(key)
     const ref = ctx.refs.get((a.ref ?? '').trim().toUpperCase())
     const value = (a.value ?? '').trim()
+
+    const plugin = pluginFor(op)
+    if (plugin) {
+      const r = plugin.check?.(op, { ...a, date_to: a.date_to ?? '', time_to: a.time_to ?? '', number: a.number ?? 0, words: a.words ?? '' }, rows.plugins?.[plugin.name],
+        { today, said, grounded: (w) => grounded(w, said), ref, others: raw }) ?? { problem: `“${op}” can’t be checked yet` }
+      if (r.problem) problems.push(r.problem)
+      if (r.action) actions.push(r.action as unknown as Action)
+      continue
+    }
 
     if (isC2(op)) {
       const c2 = { events: rows.events ?? new Map(), changes: rows.changes ?? [], goals: rows.goals ?? new Map(), targets: rows.targets, rules: rows.rules, places: rows.places, planning: rows.planning, google: rows.google, study: rows.study, guides: rows.guides, mailRules: rows.mailRules, costs: rows.costs, titles: rows.titles,
@@ -271,6 +292,12 @@ export async function applyActions(sb: SupabaseClient, actions: Action[], today 
   const now = new Date().toISOString()
   try {
     for (const a of actions) {
+      const plugin = pluginFor(a.op)
+      if (plugin) {
+        if (!plugin.apply) throw new Error(`“${a.op}” can’t be saved yet.`)
+        applied.push(await plugin.apply(sb, a as unknown as PluginAction, now, today) as unknown as Applied)
+        continue
+      }
       if (isC2(a.op)) {
         applied.push(await applyC2(sb, a as Parameters<typeof applyC2>[1], now, today) as Applied)
         continue
@@ -323,6 +350,12 @@ export async function undoActions(sb: SupabaseClient, applied: Applied[], today 
   const undone: string[] = [], skipped: string[] = [], failed: string[] = []
   for (const a of [...applied].reverse()) {
     try {
+      const plugin = pluginFor(a.op)
+      if (plugin) {
+        const r = plugin.undo ? await plugin.undo(sb, a as unknown as PluginApplied, today) : 'skipped'
+        ;(r === 'undone' ? undone : skipped).push(a.title)
+        continue
+      }
       if (isC2(a.op)) {
         const r = await undoC2(sb, a as C2Applied, today)
         ;(r === 'undone' ? undone : skipped).push(a.title)

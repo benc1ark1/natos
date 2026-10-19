@@ -24,6 +24,7 @@ import { planningEvents, setupForAI } from '../setup'
 import { deadlineOf, deadlineLabel, sortByDate } from '../tasks'
 import { addDays, dateISOOf, daysBetween, dowShort, hhmm, shortDate, timeOf, todayISO, weekStartISO, zonedToUTC } from '../time'
 import type { AskAnswer, PlanItem, PlanRefKind, Turn, WeekPlan } from './types'
+import { pluginSnapshots } from '../telegram/plugins'
 export { checkinRange } from './week'
 
 export { CHAT_MODEL as ASK_MODEL } from '../ai/models'
@@ -53,6 +54,8 @@ export async function loadPlannerContext(sb: SupabaseClient): Promise<PlannerCon
   const weekStart = weekStartISO(today)
   const end = addDays(today, 13)
   const sevenAgo = addDays(today, -7)
+  // the plug-ins' records (study tracker, ACT, gym…), read alongside everything else (lib/telegram/plugins)
+  const extra = pluginSnapshots(sb, today)
 
   const [subjects, tasks, done, targets, logs, events, changes, goals, sessions, habits, facts, reminders, reviews, projects, weekCounts, training, places, journeys, profile, google, whoop, workouts, study, guides, mailRules, mailRecent, costs, blockRows, archivedRows] = await Promise.all([
     sb.from('subjects').select('id,name'),
@@ -60,13 +63,14 @@ export async function loadPlannerContext(sb: SupabaseClient): Promise<PlannerCon
     sb.from('tasks').select('id,title,completed_at,is_system,goal_id').eq('archive_reason', 'done').gte('completed_at', `${sevenAgo}T00:00:00Z`).order('completed_at'),
     sb.from('weekly_targets').select('*').eq('is_active', true).order('sort_order'),
     sb.from('target_logs').select('id,target_id,done_on,amount,source,created_at').gte('done_on', weekStart).lte('done_on', addDays(weekStart, 6)),
-    sb.from('events').select('*').is('archived_at', null),
+    // ordered, so the refs (E1, E2…) stay the same between messages (an update can change the table's own order)
+    sb.from('events').select('*').is('archived_at', null).order('created_at').order('id'),
     sb.from('event_exceptions').select('id,event_id,on_date,cancelled,new_date,new_start,new_end,missed').gte('on_date', addDays(weekStart, -7)).lte('on_date', addDays(end, 7)),
     sb.from('goals').select(GOAL_COLS).is('archived_at', null).or(`target_date.is.null,target_date.gte.${today}`).order('target_date', { nullsFirst: false }),
     sb.from('tasks').select('goal_id,archive_reason').eq('is_system', true).not('goal_id', 'is', null),
     sb.from('habits').select('id,name,is_active,sort_order,days_of_week').eq('is_active', true).order('sort_order'),
     sb.from('context_facts').select('fact').eq('is_active', true).order('created_at'),
-    sb.from('reminders').select('*').is('done_at', null),
+    sb.from('reminders').select('*').is('done_at', null).order('created_at').order('id'),
     sb.from('weekly_reviews').select('week_start,priorities,plan').in('week_start', [weekStart, addDays(weekStart, 7)]),
     sb.from('projects').select('id,name').is('archived_at', null).order('sort_order'),
     loadWeekCounts(sb, weekStart),
@@ -322,6 +326,10 @@ export async function loadPlannerContext(sb: SupabaseClient): Promise<PlannerCon
   const pri = (r?: { priorities: string[] }) => (r?.priorities?.length ? r.priorities.map((p, i) => `${i + 1}. ${p}`).join('  ') : '(not set)')
   push('Top priorities (from the Sunday check-in)', [`This week: ${pri(thisWeek)}`, ...(nextWeek ? [`Next week: ${pri(nextWeek)}`] : [])])
   push('This week’s confirmed plan, for ahead/behind (✓ = done)', planLines(thisWeek?.plan ?? null, (done.data ?? []) as Done[], lgs, today))
+
+  const more = await extra
+  for (const sec of more.sections) push(sec.title, sec.lines)
+  for (const [key, r] of more.refs) if (!refs.has(key.toUpperCase())) refs.set(key.toUpperCase(), r as unknown as Ref)
 
   return { today, weekStart, snapshot: lines.join('\n\n'), refs, guides: guideRows }
 }

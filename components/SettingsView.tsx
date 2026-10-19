@@ -32,6 +32,8 @@ const GROUPS: { key: Group; title: string; note?: string }[] = [
   { key: 'optimiser', title: 'Optimiser weights', note: 'What each thing costs when the optimiser scores a week. Bigger = avoided more. None of these is a hard rule.' },
   { key: 'study', title: 'Study', note: 'Pipelines, topics and GoodNotes links are on each subject’s page (Subjects).' },
   { key: 'tests', title: 'Tests' },
+  { key: 'act', title: 'ACT' },
+  { key: 'gym', title: 'Gym progress' },
   { key: 'travel', title: 'Travel' },
 ]
 
@@ -77,7 +79,7 @@ export default function SettingsView() {
         </div>
       </div>
 
-      {GROUPS.map((g) => (
+      {GROUPS.filter((g) => !['act', 'gym'].includes(g.key) || Object.values(SETTINGS).some((s) => s.group === g.key)).map((g) => (
         <section key={g.key} className="card setcard" aria-labelledby={`set-${g.key}`}>
           <div className="ch"><span className="lbl" id={`set-${g.key}`}>{g.title}</span></div>
           {g.note && <p className="usub" style={{ margin: '0 0 12px' }}>{g.note}</p>}
@@ -141,7 +143,7 @@ function SettingField({ k, value, planning, custom, onSave, onReset, toast }: {
       : s.choices!.map((c) => ({ value: c, label: showSetting(k, c) }))
     return <div className="setfield"><Select label={s.label} value={String(value)} disabled={busy} onChange={(v) => { setDraft(v); commit(v) }} options={options} />{reset}</div>
   }
-  const long = s.kind === 'text'
+  const long = s.kind === 'text' && (s.max ?? 500) > 300   // short text (a link) fits one line
   return (
     <div className={`setfield ${long || s.kind === 'list' ? 'full' : ''}`}>
       <label className="field"><span>{s.label}{s.kind === 'minutes' ? ' (min)' : ''}</span>

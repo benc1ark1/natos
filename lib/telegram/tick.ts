@@ -16,6 +16,7 @@ import { esc, send, setCommands, setMenuButton, type Button } from './api'
 import { buildBrief, buildNudge, loadDay } from './brief'
 import { refreshPinned } from './pinned'
 import { COMMANDS, appUrl } from './bot'
+import { runPluginTicks } from './plugins'
 import { claim, release } from './sent'
 import { askNextType } from './asktype'
 import { syncGoogle } from '../google/sync'
@@ -142,6 +143,9 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
   // Build O: the Sunday "Your week" card, the morning queue, gap questions, the 21:00 wrap-up and the cards that
   // keep the plan right as things change (lib/telegram/schedule.ts). Quiet hours are kept there.
   try { sent.push(...await proactive(sb, chatId, nowDate, today, planning)) } catch {}
+
+  // plug-ins' own messages (lib/telegram/plugins): the morning Today, the weekly check, a Classroom test question…
+  await runPluginTicks({ sb, chatId, now: nowDate, today, time: now, planning, once: async (key, build) => { await once(key, async () => { const out = await build(); if (out) sent.push(key); return out }) } })
 
   // The pinned "Today" message: catches dashboard changes and events passing (a new day's starts at 07:00).
   const pinned = await refreshPinned(sb, chatId, nowDate, { startAfter: BRIEF_AT })
