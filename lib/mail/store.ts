@@ -5,6 +5,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { getUserId } from '../data'
 import { parseFrom, type Account, type Incoming } from './rules'
 
+/** "column … does not exist" (a SQL file not run yet), from Postgres or PostgREST. */
+export const missingColumn = (e: { code?: string; message?: string } | null | undefined) =>
+  !!e && (e.code === '42703' || e.code === 'PGRST204' || /column .* does not exist|could not find the .* column/i.test(e.message ?? ''))
+
 /** The mark the school script's fallback puts at the start of an event's description: "natos-mail {json}". */
 export const MAIL_MARK = 'natos-mail '
 
@@ -22,9 +26,13 @@ export async function ingest(sb: SupabaseClient, input: { account: Account; addr
     return {
       user_id: userId, account: input.account, message_id: m.id, thread_id: m.thread, from_name: f.name?.slice(0, 200) ?? null, from_email: f.email?.slice(0, 320) ?? null,
       subject: m.subject || null, snippet: m.snippet || null, received_at: m.received, labels: m.labels, automated: m.automated, via: input.via,
+      ...(m.body ? { body: m.body } : {}),
     }
   })
-  const { data, error } = await sb.from('emails').upsert(rows, { onConflict: 'user_id,account,message_id', ignoreDuplicates: true }).select('id')
+  const save = (list: typeof rows) => sb.from('emails').upsert(list, { onConflict: 'user_id,account,message_id', ignoreDuplicates: true }).select('id')
+  let { data, error } = await save(rows)
+  // before supabase/mail-homework.sql there's no "body" column: kept without it (the preview line still works)
+  if (error && rows.some((r) => 'body' in r) && missingColumn(error)) ({ data, error } = await save(rows.map(({ body: _, ...r }) => r)))
   if (error) throw new Error(`Couldn’t save the emails: ${error.message}`)
   return data?.length ?? 0
 }

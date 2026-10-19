@@ -2,7 +2,10 @@
  * Nat OS: email watcher. One copy runs in each Google account (school and personal), every 15 minutes.
  *
  * It sends each new email's sender, subject and Gmail's short preview line to Nat OS, which sorts it (homework,
- * needs a reply, event, or ignore) and tells you on Telegram. It never sends the whole email.
+ * needs a reply, event, or ignore) and tells you on Telegram. Only an email that looks like homework (homework words
+ * in its subject or preview, or from a sender Nat OS says sets homework: your tutors and your school) also goes with
+ * its text (up to 4,000 characters), so the task gets the right deadline and what to do. Nat OS keeps that text only
+ * if it is homework.
  *  - Read-only: this project only has permission to READ Gmail (see appsscript.json), so it can't send, delete,
  *    archive or mark anything as read, even by mistake.
  *  - Never twice: it remembers what it has sent, and Nat OS ignores repeats anyway.
@@ -29,6 +32,9 @@ const HOUR = 60 * 60 * 1000;
 const MARK = 'natos-mail ';
 const MAIL_TAG = 'natosMail';
 const HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
+const MAX_BODY = 4000;
+// the same words Nat OS uses (lib/mail/homework.ts HOMEWORK_WORDS)
+const HOMEWORK_WORDS = /\b(home ?work|hw|due|deadline|assignment|worksheet|exercises?|problems?|questions?|coursework|essay|submit|hand ?in|past paper|revise|revision)\b/i;
 
 /** Run this once by hand: checks Nat OS can be reached from this account, and says which way emails will go. */
 function checkConnection() {
@@ -45,7 +51,7 @@ function checkConnection() {
     return;
   }
   const code = res.getResponseCode();
-  if (code === 200) console.log('✅ Connected: Nat OS answered. Emails go straight to the app. Now add the trigger.');
+  if (code === 200) { rememberBodyFrom(res); console.log('✅ Connected: Nat OS answered. Emails go straight to the app. Now add the trigger.'); }
   else if (code === 401) console.log('❌ Nat OS didn’t accept the key. Copy the script again (scripts/mail-script.sh) and paste it over this one.');
   else console.log('❌ Nat OS answered ' + code + ': ' + res.getContentText().slice(0, 200));
 }
@@ -83,23 +89,73 @@ function newMessages(since, sentIds) {
     pageToken = r.nextPageToken;
   } while (pageToken && ids.length < 500);
   ids.reverse();   // Gmail lists newest first
+  const bodyFrom = JSON.parse(PropertiesService.getScriptProperties().getProperty('bodyFrom') || '[]');
   const out = [];
   for (const id of ids) {
     if (out.length >= MAX_PER_RUN) break;
-    // format "metadata": the headers above and Gmail's preview line, never the body
+    // format "metadata": the headers above and Gmail's preview line
     const m = Gmail.Users.Messages.get('me', id, { format: 'metadata', metadataHeaders: HEADERS });
     const h = {};
     ((m.payload && m.payload.headers) || []).forEach((x) => { h[x.name.toLowerCase()] = x.value; });
     const precedence = (h['precedence'] || '').toLowerCase();
     const auto = (h['auto-submitted'] || 'no').toLowerCase();
-    out.push({
+    const one = {
       id: m.id, thread: m.threadId, from: (h['from'] || '').slice(0, 400), subject: (h['subject'] || '').slice(0, 300),
       snippet: (m.snippet || '').slice(0, 300), received: new Date(Number(m.internalDate)).toISOString(),
       labels: (m.labelIds || []).filter((l) => l.indexOf('CATEGORY_') === 0),
       automated: !!(h['list-unsubscribe'] || h['list-id'] || ['bulk', 'list', 'junk'].indexOf(precedence) >= 0 || auto !== 'no'),
-    });
+    };
+    // the text too, only when it looks like homework (homework words, or a sender Nat OS says sets homework)
+    if (!one.automated && (HOMEWORK_WORDS.test(one.subject + ' ' + one.snippet) || fromListed(one.from, bodyFrom))) {
+      const text = bodyText(id);
+      if (text) one.body = text.slice(0, MAX_BODY);
+    }
+    out.push(one);
   }
   return out.sort((a, b) => Date.parse(a.received) - Date.parse(b.received));
+}
+
+/** Is the sender one Nat OS listed ("sam@tutor.com" or "@school.org.uk")? */
+function fromListed(from, list) {
+  const m = from.match(/<([^<>\s]+@[^<>\s]+)>/) || from.match(/([^\s<>]+@[^\s<>]+)/);
+  const email = m ? m[1].toLowerCase() : '';
+  if (!email) return false;
+  const host = email.split('@')[1] || '';
+  return list.some((p) => {
+    p = String(p).toLowerCase();
+    if (p.charAt(0) === '@') { const d = p.slice(1); return host === d || host.slice(-(d.length + 1)) === '.' + d; }
+    return email === p;
+  });
+}
+
+/** An email's plain text (the HTML part as text if there's no plain one). Read-only. */
+function bodyText(id) {
+  const m = Gmail.Users.Messages.get('me', id, { format: 'full' });
+  let plain = '', html = '';
+  const walk = (p) => {
+    if (!p) return;
+    const data = p.body && p.body.data;
+    if (data && p.mimeType === 'text/plain' && !plain) plain = decode(data);
+    else if (data && p.mimeType === 'text/html' && !html) html = decode(data);
+    (p.parts || []).forEach(walk);
+  };
+  walk(m.payload);
+  if (plain) return plain.trim();
+  return html.replace(/<(br|\/p|\/div|\/li|\/tr)[^>]*>/gi, '\n').replace(/<li[^>]*>/gi, '- ').replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, ' ').split('\n').map((l) => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function decode(data) {
+  return Utilities.newBlob(Utilities.base64DecodeWebSafe(data)).getDataAsString('UTF-8');
+}
+
+/** Nat OS answers with the senders whose emails should go with their text: kept for the next runs. */
+function rememberBodyFrom(res) {
+  try {
+    const list = JSON.parse(res.getContentText()).bodyFrom;
+    if (Array.isArray(list)) PropertiesService.getScriptProperties().setProperty('bodyFrom', JSON.stringify(list.slice(0, 50)));
+  } catch (e) { /* keep the old list */ }
 }
 
 /** To Nat OS, or (school, when calls out are blocked) to the fallback calendar. Throws if neither worked. */
@@ -115,6 +171,7 @@ function deliver(payload) {
   const code = res.getResponseCode();
   if (code === 401) throw new Error('Nat OS didn’t accept the key. Copy the script again (scripts/mail-script.sh) and paste it over this one.');
   if (code !== 200) throw new Error('Nat OS answered ' + code + ': ' + res.getContentText().slice(0, 200));   // tried again next run
+  rememberBodyFrom(res);
   return 'url';
 }
 

@@ -11,7 +11,7 @@ const FEED = 'feed@group.calendar.google.com'
 const src = readFileSync(new URL('../google-apps-script/mail-watcher.gs', import.meta.url), 'utf8')
 
 /** A fake Gmail account (what the Gmail API returns for format "metadata"), UrlFetchApp, properties and a calendar. */
-function fakes({ blocked = false, status = 200 } = {}) {
+function fakes({ blocked = false, status = 200, reply = '{}' } = {}) {
   const now = Date.now()
   const msgs = [
     { id: 'm1', threadId: 't1', internalDate: String(now - 30 * 60_000), snippet: 'Hi Nat, please do the binary search exercises for Thursday', labelIds: ['INBOX', 'UNREAD', 'CATEGORY_PERSONAL'], headers: { From: 'Sam Smith <sam@tutor.com>', Subject: 'CS homework' }, body: 'THE WHOLE EMAIL BODY' },
@@ -31,8 +31,13 @@ function fakes({ blocked = false, status = 200 } = {}) {
         return { messages: msgs.filter((m) => Number(m.internalDate) > after).sort((a, b) => b.internalDate - a.internalDate).map((m) => ({ id: m.id })) }
       },
       get: (_me, id, o) => {
-        calls.get.push(o)
+        calls.get.push({ ...o, id })
         const m = msgs.find((x) => x.id === id)
+        // format "full": the parts, base64url like Gmail (an HTML part only when the email has no plain one)
+        if (o.format === 'full') {
+          const part = (mimeType, text) => ({ mimeType, body: { data: Buffer.from(text, 'utf8').toString('base64url') } })
+          return { id: m.id, payload: { mimeType: 'multipart/alternative', parts: m.html ? [part('text/html', m.html)] : [part('text/plain', m.body), part('text/html', `<p>${m.body}</p>`)] } }
+        }
         return { id: m.id, threadId: m.threadId, internalDate: m.internalDate, snippet: m.snippet, labelIds: m.labelIds,
           payload: { headers: Object.entries(m.headers).filter(([k]) => o.metadataHeaders.includes(k)).map(([name, value]) => ({ name, value })) } }
       },
@@ -41,7 +46,7 @@ function fakes({ blocked = false, status = 200 } = {}) {
   const UrlFetchApp = { fetch: (url, o) => {
     if (blocked) throw new Error('You do not have permission to call UrlFetchApp.fetch')
     calls.posts.push({ url, auth: o.headers.Authorization, body: JSON.parse(o.payload) })
-    return { getResponseCode: () => status, getContentText: () => '{}' }
+    return { getResponseCode: () => status, getContentText: () => reply }
   } }
   const event = (title, at, o) => {
     const ev = { id: `ev${++n}`, title, at, description: o.description, tags: {}, deleted: false,
@@ -57,7 +62,11 @@ function fakes({ blocked = false, status = 200 } = {}) {
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => props.get(k) ?? null, setProperty: (k, v) => props.set(k, String(v)) }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
     CalendarApp: { getCalendarById: (id) => (id === FEED ? cal : null) },
-    Utilities: { sleep: () => {} },
+    Utilities: {
+      sleep: () => {},
+      base64DecodeWebSafe: (s) => [...Buffer.from(s, 'base64url')],
+      newBlob: (bytes) => ({ getDataAsString: () => Buffer.from(bytes).toString('utf8') }),
+    },
   })
   return { msgs, calls, props, events, ctx, now }
 }
@@ -66,7 +75,7 @@ const load = (f, account, fallback = '') => {
   return (fn) => vm.runInContext(`${fn}()`, f.ctx)
 }
 
-test('the Gmail script: read-only permissions, metadata only, each email once, the school fallback when calls out are blocked', () => {
+test('the Gmail script: read-only permissions, the text only for likely homework, each email once, the school fallback when calls out are blocked', () => {
   // permissions: read-only Gmail (it can't send, delete or mark), calling the app; only the school one has a calendar
   for (const acc of ['school', 'personal']) {
     const m = JSON.parse(readFileSync(new URL(`../google-apps-script/mail-watcher-${acc}.appsscript.json`, import.meta.url), 'utf8'))
@@ -77,8 +86,8 @@ test('the Gmail script: read-only permissions, metadata only, each email once, t
   assert.doesNotMatch(src, /\.(send|trash|delete|modify|batchModify|markRead|moveToTrash|insert|import)\w*\(\s*'me'/i, 'no Gmail write calls')
   assert.doesNotMatch(src, /GmailApp/, 'GmailApp would need full mail access')
 
-  // first run: the last 12 hours, oldest first, metadata only, with the key
-  let f = fakes()
+  // first run: the last 12 hours, oldest first, with the key; the text only for the homework email (not the promo)
+  let f = fakes({ reply: JSON.stringify({ ok: true, added: 2, bodyFrom: ['sam@tutor.com', '@school.org'] }) })
   let run = load(f, 'personal')
   run('checkMail')
   assert.equal(f.calls.posts.length, 1)
@@ -88,8 +97,10 @@ test('the Gmail script: read-only permissions, metadata only, each email once, t
   assert.equal(p.body.account, 'personal')
   assert.equal(p.body.address, 'nat@school.org')
   assert.deepEqual(p.body.messages.map((m) => m.id), ['m2', 'm1'], 'oldest first; the 20-hour-old one is before the first run')
-  assert.ok(f.calls.get.every((o) => o.format === 'metadata'), 'never the whole email')
-  assert.doesNotMatch(JSON.stringify(p.body), /BODY/)
+  assert.deepEqual(f.calls.get.filter((o) => o.format === 'full').map((o) => o.id), ['m1'], 'the whole email only for likely homework')
+  assert.equal(p.body.messages[1].body, 'THE WHOLE EMAIL BODY')
+  assert.equal(p.body.messages[0].body, undefined, 'never the promo’s text')
+  assert.deepEqual(JSON.parse(f.props.get('bodyFrom')), ['sam@tutor.com', '@school.org'], 'remembers whose emails set homework')
   assert.deepEqual(p.body.messages.map((m) => [m.from, m.automated, m.labels]), [['Shop <deals@shop.com>', true, ['CATEGORY_PROMOTIONS']], ['Sam Smith <sam@tutor.com>', false, ['CATEGORY_PERSONAL']]])
   assert.match(f.calls.list[0], /-from:me/)
 
@@ -97,9 +108,14 @@ test('the Gmail script: read-only permissions, metadata only, each email once, t
   run('checkMail')
   assert.equal(f.calls.posts.length, 2)
   assert.deepEqual(f.calls.posts[1].body.messages, [])
-  f.msgs.push({ id: 'm3', threadId: 't4', internalDate: String(Date.now()), snippet: 'Are you free Tuesday?', labelIds: ['INBOX'], headers: { From: 'Ms Patel <patel@school.org>', Subject: 'Quick question' } })
+  f.msgs.push({ id: 'm3', threadId: 't4', internalDate: String(Date.now()), snippet: 'Are you free Tuesday?', labelIds: ['INBOX'], headers: { From: 'Ms Patel <patel@school.org>', Subject: 'Quick question' }, html: '<p>Hi Nat,</p><ul><li>Q1&nbsp;to Q5</li></ul>' })
+  f.msgs.push({ id: 'm4', threadId: 't5', internalDate: String(Date.now() + 1000), snippet: 'Lovely photos!', labelIds: ['INBOX'], headers: { From: 'Alex <alex@x.com>', Subject: 'Trip' }, body: 'PRIVATE' })
   run('checkMail')
-  assert.deepEqual(f.calls.posts[2].body.messages.map((m) => m.id), ['m3'])
+  const third = f.calls.posts[2].body.messages
+  assert.deepEqual(third.map((m) => m.id), ['m3', 'm4'])
+  // a sender Nat OS listed (his school's domain) goes with its text even without homework words; HTML turned into text
+  assert.equal(third[0].body, 'Hi Nat,\n- Q1 to Q5')
+  assert.equal(third[1].body, undefined, 'anyone else without homework words: metadata only')
 
   // Nat OS refuses (wrong key): an error, and nothing is marked as sent
   f = fakes({ status: 401 })

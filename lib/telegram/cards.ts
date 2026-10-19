@@ -207,7 +207,7 @@ export async function describe(sb: SupabaseClient, p: Proposal, dups: Duplicate[
       const subject = await name('subjects', 'name', p.subject_id)
       if (subject) bits.push(subject)
       bits.push(p.importance === 'must' ? 'must' : 'nice')
-      if (p.due) bits.push(`due ${day(p.due)}`)
+      if (p.due) bits.push(`due ${day(p.due)}${p.due_time ? ` ${p.due_time}` : ''}`)
       else if (p.window_end) bits.push(`${p.window_label ?? 'by'} (by ${day(p.window_end)})`)
       if (p.duration_minutes) bits.push(`~${p.duration_minutes} min`)
       if (p.origin && p.origin !== 'own') bits.push(`from ${sourceLabel(await sb.from('profiles').select('planning').maybeSingle().then((r) => r.data?.planning ?? null), p.origin)}`)
@@ -244,6 +244,7 @@ export async function describe(sb: SupabaseClient, p: Proposal, dups: Duplicate[
   }
   const lines = [head]
   if (bits.length) lines.push(esc(bits.join(' · ')))
+  if (p.kind === 'task' && p.details) lines.push(`📝 ${esc(p.details.split('\n').find((l) => l.trim())?.trim().slice(0, 160) ?? '')}`)
   for (const d of dups) lines.push(`⚠️ Looks like a duplicate: ${esc(d.what)} “${esc(d.title)}”`)
   for (const n of p.notes) lines.push(`<i>${esc(n)}</i>`)
   if (p.reasoning) lines.push(`<i>Why: ${esc(p.reasoning)}</i>`)
@@ -518,11 +519,13 @@ export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
       if (!ref) { await back('saved'); await tell('That one can’t be undone from here: change it on the dashboard.'); return }
       const { error } = ref.table === 'target_logs'
         ? await sb.from('target_logs').delete().eq('id', ref.id).select('id').single()
+        : ref.table === 'tasks'   // a homework task from an email: archived (never deleted)
+          ? await sb.from('tasks').update({ archived_at: new Date().toISOString(), archive_reason: 'dropped' }).eq('id', ref.id).is('archived_at', null).select('id').single()
         : ref.table === 'topic_progress'
           ? await sb.from('topic_progress').update({ undone_at: new Date().toISOString() }).eq('id', ref.id).select('id').single()
           : await sb.from('mistakes').update({ archived_at: new Date().toISOString() }).eq('id', ref.id).select('id').single()
       if (error) { await back('saved'); await tell(`⚠️ Couldn’t undo: ${esc(error.message)}`); return }
-      await tell(ref.table === 'target_logs' ? '↩️ Undone: that log is gone.' : ref.table === 'topic_progress' ? '↩️ Undone: that stage isn’t done any more.' : '↩️ Undone: that mistake is off the list.')
+      await tell(ref.table === 'target_logs' ? '↩️ Undone: that log is gone.' : ref.table === 'tasks' ? '↩️ Undone: that task is off your list (archived, not deleted).' : ref.table === 'topic_progress' ? '↩️ Undone: that stage isn’t done any more.' : '↩️ Undone: that mistake is off the list.')
       await pinned()
       return
     }

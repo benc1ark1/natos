@@ -7,7 +7,8 @@ import { ACT_SETTINGS } from './act/settings'
 import { TODAY_SETTINGS } from './today/settings'
 import { GYM_SETTINGS } from './gym/settings'
 import { WEEKLY_SETTINGS } from './weekly/settings'
+import { MAIL_SETTINGS } from './mail/settings'
 
 export type ExtraSpec = Spec & { default: string | number }
 
-export const EXTRA_SETTINGS: Record<string, ExtraSpec> = { ...TRACKER_SETTINGS, ...ACT_SETTINGS, ...TODAY_SETTINGS, ...GYM_SETTINGS, ...WEEKLY_SETTINGS }
+export const EXTRA_SETTINGS: Record<string, ExtraSpec> = { ...TRACKER_SETTINGS, ...ACT_SETTINGS, ...TODAY_SETTINGS, ...GYM_SETTINGS, ...WEEKLY_SETTINGS, ...MAIL_SETTINGS }
