@@ -123,3 +123,22 @@ export const setMenuButton = (chatId: number, url: string) =>
 /** Change a card in place: its text and its buttons (no notification). */
 export const editCard = (chatId: number, messageId: number, html: string, buttons: Button[][]) =>
   withHtml('editMessageText', { chat_id: chatId, message_id: messageId, link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: buttons } }, html)
+
+/** Send a file as a document (the study tracker's CSV export): multipart, with an optional HTML caption (≤ 1024). */
+export async function sendDocument(chatId: number, file: { name: string; content: string; type?: string }, caption?: string): Promise<{ message_id?: number } | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) throw new TelegramError('The bot token isn’t set up (TELEGRAM_BOT_TOKEN).')
+  const form = new FormData()
+  form.append('chat_id', String(chatId))
+  form.append('document', new Blob([file.content], { type: file.type ?? 'text/csv' }), file.name)
+  if (caption) { form.append('caption', safeHtml(caption, 1000)); form.append('parse_mode', 'HTML') }
+  let res: Response
+  try {
+    res = await fetch(`${base()}/bot${token}/sendDocument`, { method: 'POST', body: form, cache: 'no-store' })
+  } catch {
+    throw new TelegramError('Couldn’t reach Telegram (sendDocument).')
+  }
+  const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: { message_id?: number }; description?: string } | null
+  if (!json?.ok) throw new TelegramError(clean(`Telegram sendDocument failed: ${json?.description ?? res.status}`))
+  return json.result ?? null
+}

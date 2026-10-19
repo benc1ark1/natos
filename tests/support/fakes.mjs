@@ -9,7 +9,8 @@ async function serve(handler) {
     req.on('data', (c) => (body += c))
     req.on('end', async () => {
       try {
-        const out = await handler(req, body ? JSON.parse(body) : {})
+        const type = req.headers['content-type'] ?? ''
+        const out = await handler(req, !body ? {} : type.startsWith('multipart/form-data') ? multipart(body, type) : JSON.parse(body))
         res.statusCode = out.status ?? 200
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify(out.json))
@@ -21,6 +22,22 @@ async function serve(handler) {
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   return { server, url: `http://127.0.0.1:${server.address().port}` }
+}
+
+/** A multipart form (sendDocument) → { field: value, file field: { filename, type, content } }. Text files only. */
+function multipart(body, type) {
+  const boundary = type.match(/boundary=(?:"([^"]+)"|([^;]+))/)?.slice(1).find(Boolean)
+  const out = {}
+  for (const part of body.split(`--${boundary}`)) {
+    const at = part.indexOf('\r\n\r\n')
+    if (at < 0) continue
+    const head = part.slice(0, at), content = part.slice(at + 4).replace(/\r\n$/, '')
+    const name = head.match(/name="([^"]*)"/)?.[1]
+    if (!name) continue
+    const filename = head.match(/filename="([^"]*)"/)?.[1]
+    out[name] = filename !== undefined ? { filename, type: head.match(/content-type:\s*([^\r\n]+)/i)?.[1] ?? '', content } : content
+  }
+  return out
 }
 
 export async function fakeTelegram() {
@@ -35,7 +52,8 @@ export async function fakeTelegram() {
       calls.push({ method, body, result: null, failed: description })
       return { status: 400, json: { ok: false, error_code: 400, description } }
     }
-    const result = method === 'sendMessage' ? { message_id: ++nextId, chat: { id: body.chat_id }, text: body.text } : true
+    const result = method === 'sendMessage' ? { message_id: ++nextId, chat: { id: body.chat_id }, text: body.text }
+      : method === 'sendDocument' ? { message_id: ++nextId, chat: { id: Number(body.chat_id) }, document: { file_name: body.document?.filename } } : true
     calls.push({ method, body, result })
     return { json: { ok: true, result } }
   })
