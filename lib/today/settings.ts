@@ -10,4 +10,5 @@ export const TODAY_SETTINGS: Record<string, ExtraSpec> = {
   holidays: { label: 'Holidays (no school: half-term mode)', kind: 'list', group: 'day', max: 300, default: '2026-10-17..2026-11-01',
     help: 'Date ranges, separated by commas (“2026-10-17..2026-11-01, 2026-12-19..2027-01-03”), or “none”. The default is a guess.' },
   holidayWakeAt: { label: 'Wake up on holidays (the morning message waits until then)', kind: 'time', group: 'day', default: '09:00' },
+  holidayTrainingFrom: { label: 'On holidays, gym can be from (never earlier; your usual gym time is still preferred)', kind: 'time', group: 'training', default: '12:00' },
 }

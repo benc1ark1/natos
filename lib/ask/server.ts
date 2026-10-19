@@ -106,7 +106,8 @@ export async function loadPlannerContext(sb: SupabaseClient): Promise<PlannerCon
   const open = sortByDate(nextSessionsOnly(((tasks.data ?? []) as Task[]).filter((t) => !t.is_system || (t.goal_id && goalIds.has(t.goal_id)))))
   const chs = (changes.data ?? []) as EventException[]
   // read-only sessions he asked the app to ignore are left out; this week's game (his set-up) is added
-  const evs = planningEvents((events.data ?? []) as EventRow[], chs, profile.error ? null : profile.data?.planning ?? null, weekStart, addDays(end, 7))
+  const testDays = activeGoals.filter((g) => g.kind === 'test' && g.target_date).map((g) => g.target_date!)
+  const evs = planningEvents((events.data ?? []) as EventRow[], chs, profile.error ? null : profile.data?.planning ?? null, weekStart, addDays(end, 7), testDays)
   const tgs = (targets.data ?? []) as WeeklyTarget[]
   const lgs = (logs.data ?? []) as TargetLog[]
 

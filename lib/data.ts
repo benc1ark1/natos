@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Category, Subject, Task, TaskStatus } from './types'
+import { isChatOnly } from './chat-only'
 
 type Res<T> = { data: T | null; error: { message: string } | null }
 
@@ -97,6 +98,8 @@ export async function undoMove(sb: SupabaseClient, before: Task): Promise<string
 /** Save a capture: to the Inbox, or wherever its optional details put it. */
 export async function captureToInbox(sb: SupabaseClient, text: string, details: Partial<Task> = {}): Promise<{ task?: Task; error?: string }> {
   const clean = text.trim()
+  // chat ("hello", "that okay maybe") is never kept as an item, even when sorting failed (a sorted card has its own title)
+  if (!details.title && isChatOnly(clean)) return { error: 'That’s just chat, so nothing was saved.' }
   const { data, error } = await sb.from('tasks')
     .insert({ title: clean.slice(0, 200), status: 'inbox', source: 'dashboard', source_text: clean, ...details })
     .select('*').single()

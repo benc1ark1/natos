@@ -250,12 +250,14 @@ export function gameFor(weekStart: string, planning: unknown): Game | null {
  * The game as a calendar-like event (in memory only) for each week in the range, unless his calendar already has a
  * match that week (`hasMatch`: the calendar is the source of truth for events).
  */
-export function gameEvents(from: string, to: string, planning: unknown, hasMatch: (weekStart: string) => boolean): EventRow[] {
+export function gameEvents(from: string, to: string, planning: unknown, hasMatch: (weekStart: string) => boolean, testDays: string[] = []): EventRow[] {
   const out: EventRow[] = []
   for (let wk = weekStartISO(from); wk <= to; wk = addDays(wk, 7)) {
     if (hasMatch(wk)) continue
     const g = gameFor(wk, planning)
     if (!g || g.date < from || g.date > to || minutesOf(g.back) <= minutesOf(g.leave)) continue
+    // a test that day (the ACT retake on Sun 25 Oct): no game from his usual day; one he says is on that week still counts
+    if (g.source === 'usual' && testDays.includes(g.date)) continue
     out.push({
       id: `game:${g.date}`, title: 'Game', category_id: null, subject_id: null, location: null,
       starts_at: zonedToUTC(g.date, g.leave), ends_at: zonedToUTC(g.date, g.back), repeat_days: null, start_time: null, end_time: null, repeat_from: null, repeat_until: null,
@@ -282,10 +284,10 @@ export function liveEvents<T extends { title: string; external_source?: string }
 
 /** His events as the app plans with them: read-only sessions he asked it to ignore left out, and the week's game
  *  (his usual game day, or this week's answer) added unless his calendar already has a match that week. */
-export function planningEvents(events: EventRow[], changes: EventException[], planning: unknown, from: string, to: string): EventRow[] {
+export function planningEvents(events: EventRow[], changes: EventException[], planning: unknown, from: string, to: string, testDays: string[] = []): EventRow[] {
   const live = liveEvents(events, planning)
   const hasMatch = (wk: string) => expandEvents(live, wk, addDays(wk, 6), changes).some((o) => !o.cancelled && o.event.training_type === 'match')
-  return [...live, ...gameEvents(from, to, planning, hasMatch)]
+  return [...live, ...gameEvents(from, to, planning, hasMatch, testDays)]
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ export type DoneHint =
   | { kind: 'block' }                                                   // nothing else: the plan block is just ticked
 
 export type Pick = {
+  after?: string                // goes after this pick that day (its key): an ACT test's review straight after the test
   key: string                   // stable within a day: 'task:<id>', 'topic:<id>:ahead', 'test:<goalId>:timed', 'prog:<itemId>', 'act:english:timed'
   kind: PickKind
   tier: Tier

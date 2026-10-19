@@ -474,9 +474,11 @@ function holidayCountdown(world: ActWorld, day: DayContext, x: { flash: Step | n
     const left = room - full
     const redo = due.length && left >= MOCK_REVIEW_MIN + REDO_MIN ? missStep(world, date, null, REDO_MIN) : null
     const review: Step = { minutes: left - (redo?.minutes ?? 0), what: 'review the test straight after: every miss → its rule or reason, logged (“ACT miss: english Q12 comma splice — …”)' }
+    const after = test[0]?.key
     return [...test, ...x.make({ key: 'act:review:mock', title: 'ACT: review today’s test',
       open: 'Straight after the test: mark it, then every miss → its rule or reason, logged; redo the ones you can’t explain. Then send “ACT practice: E.. M.. R..”',
-      steps: [review, ...(redo ? [redo] : [])], why: `${x.when} · the review straight after the test`, done: { kind: 'act', section: 'review' } }, x.tier)]
+      steps: [review, ...(redo ? [redo] : [])], why: `${x.when} · the review straight after the test`, done: { kind: 'act', section: 'review' } }, x.tier)
+      .map((p) => (after ? { ...p, after } : p))]   // placed after the test, never before it
   }
   if (dayDone) return []
   // every section, timed and marked: English first, then the weakest of the others

@@ -139,6 +139,8 @@ test('two quick messages while a card waits: handled one after the other; the wa
   const slow = (reply, ms) => async () => { await new Promise((r) => setTimeout(r, ms)); return reply }
   // the AI wrongly calls the first quick message a correction of the waiting card
   chat.ai.script(CHAT, slow(brain({ intent: 'correction', item_text: 'Maths test on Thursday' }), 800))
+  // …so it's read again without the card: a new item
+  chat.ai.script(CHAT, brain({ intent: 'new', item_text: 'Maths test on Thursday' }))
   chat.ai.script(SORT, sorted({ kind: 'test', title: 'Maths test', test_date: W.thu, date_words: 'Thursday' }))
   chat.ai.script(CHAT, brain({ intent: 'new', item_text: 'Physics worksheet due Monday' }))
   chat.ai.script(SORT, sorted({ title: 'Physics worksheet' }))

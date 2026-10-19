@@ -69,7 +69,8 @@ export async function loadDay(sb: SupabaseClient, today: string): Promise<DayDat
   // only the next prep session of each live test, like Home
   const open = nextSessionsOnly(rows<Task>(tasks, 'tasks').filter((t) => !t.is_system || (t.goal_id && live.has(t.goal_id))))
   const ch = rows<EventException>(changes, 'calendar changes')
-  const evs = planningEvents(rows<EventRow>(events, 'events'), ch, planning, addDays(weekStart, -7), addDays(today, 28))
+  const evs = planningEvents(rows<EventRow>(events, 'events'), ch, planning, addDays(weekStart, -7), addDays(today, 28),
+    goalRows.filter((g) => g.kind === 'test' && g.target_date).map((g) => g.target_date!))
   const tests = goalRows.filter((g) => g.kind === 'test' && g.target_date).map((g) => ({ title: g.title, target_date: g.target_date! }))
   return {
     today, tasks: open, events: evs, changes: ch,

@@ -111,7 +111,8 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
     if (!act) return []
     const picks = actPicks(act, { date, dow: isoDow(date), mode: dayMode(data.planning, date), studyMinutes: 0, actTaskMin: actTaskMinutes(data.tasks, date, act.subjectId) })
     return [
-      ...picks.map((p): PlanItem => ({ title: p.title, minutes: p.minutes, kind: p.heavy ? 'focus' : 'light', ref: null, why: ACT_WHY })),
+      ...picks.map((p): PlanItem => ({ title: p.title, minutes: p.minutes, kind: p.heavy ? 'focus' : 'light', ref: null, why: ACT_WHY,
+        ...(p.after ? { after: picks.find((x) => x.key === p.after)?.title } : {}) })),
       ...actTasksOn(data.tasks, date, act.subjectId).map((t): PlanItem => ({ title: t.title, minutes: t.duration_minutes ?? 30, kind: 'focus', ref: { kind: 'task', id: t.id }, why: ACT_WHY })),
     ]
   }

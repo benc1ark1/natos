@@ -107,8 +107,13 @@ function newMessages(since, sentIds) {
     };
     // the text too, only when it looks like homework (homework words, or a sender Nat OS says sets homework)
     if (!one.automated && (HOMEWORK_WORDS.test(one.subject + ' ' + one.snippet) || fromListed(one.from, bodyFrom))) {
-      const text = bodyText(id);
-      if (text) one.body = text.slice(0, MAX_BODY);
+      // a text that can't be read never stops the run (the email still goes, with its preview line)
+      try {
+        const text = bodyText(id);
+        if (text) one.body = text.slice(0, MAX_BODY);
+      } catch (e) {
+        console.log('Couldn’t read the text of one email (' + e.message + '): sent with its preview only.');
+      }
     }
     out.push(one);
   }
@@ -147,7 +152,9 @@ function bodyText(id) {
 }
 
 function decode(data) {
-  return Utilities.newBlob(Utilities.base64DecodeWebSafe(data)).getDataAsString('UTF-8');
+  // Gmail leaves out the "=" padding, which the decoder may need
+  const padded = data + '==='.slice((data.length + 3) % 4);
+  return Utilities.newBlob(Utilities.base64DecodeWebSafe(padded)).getDataAsString('UTF-8');
 }
 
 /** Nat OS answers with the senders whose emails should go with their text: kept for the next runs. */

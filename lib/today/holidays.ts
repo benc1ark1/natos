@@ -9,15 +9,19 @@ import type { EventException, EventRow } from '../types'
 export type Range = { from: string; to: string }
 const ISO = /^\d{4}-\d{2}-\d{2}$/
 
-/** "2026-10-17..2026-11-01, 2026-12-21" → ranges (a single date is a one-day range). "none" / odd parts → nothing. */
+/**
+ * "2026-10-17..2026-11-01, 2026-12-21" → ranges (a single date is a one-day range). A name with it counts too ("Half-term
+ * 2026-10-17..2026-11-01": what he typed in Settings, which used to be read as no holiday at all). "none" → nothing.
+ */
 export function parseHolidays(text: string | null | undefined): Range[] {
   const out: Range[] = []
-  for (const part of String(text ?? '').split(/\s*,\s*/)) {
-    const m = part.trim().match(/^(\d{4}-\d{2}-\d{2})(?:\s*(?:\.\.|–|—|\bto\b)\s*(\d{4}-\d{2}-\d{2}))?$/)
-    if (!m || !ISO.test(m[1])) continue
-    const to = m[2] ?? m[1]
-    if (to < m[1]) continue
-    out.push({ from: m[1], to })
+  const valid = (d: string) => ISO.test(d) && new Date(`${d}T12:00:00Z`).toISOString().slice(0, 10) === d
+  for (const part of String(text ?? '').split(/\s*[,;\n]\s*/)) {
+    for (const m of part.matchAll(/(\d{4}-\d{2}-\d{2})(?:\s*(?:\.\.|–|—|\s-\s|\bto\b|\buntil\b)\s*(\d{4}-\d{2}-\d{2}))?/gi)) {
+      const to = m[2] ?? m[1]
+      if (!valid(m[1]) || !valid(to) || to < m[1]) continue
+      out.push({ from: m[1], to })
+    }
   }
   return out
 }
