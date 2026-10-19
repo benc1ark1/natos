@@ -14,6 +14,7 @@ const LINKS = [
   { href: '/tasks', label: 'Tasks', icon: 'M10 6h10M10 12h10M10 18h10M4 6l1.2 1.2L7.5 5M4 12l1.2 1.2 2.3-2.2M4 18l1.2 1.2 2.3-2.2' },
   { href: '/projects', label: 'Projects', icon: 'M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z' },
   { href: '/subjects', label: 'Subjects', icon: 'M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3M9 7h6' },
+  { href: '/training', label: 'Training', icon: 'M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11' },
   { href: '/inbox', label: 'Inbox', icon: 'M3 13h5l1.5 3h5l1.5-3h5M5.5 5h13L21 13v6H3v-6z' },
   { href: '/archive', label: 'Archive', icon: 'M3 4h18v4H3zM5 8v12h14V8M10 12h4' },
   { href: '/settings', label: 'Settings', icon: 'M4 7h10M18 7h2M4 17h4M12 17h8M14 5v4M8 15v4' },
@@ -22,7 +23,7 @@ const LINKS = [
 const isOn = (href: string, path: string) => (href === '/' ? path === '/' : path.startsWith(href))
 
 // The phone's tab bar keeps the everyday ones; the rest are one tap away under More.
-const PHONE_TABS = ['/', '/tasks', '/subjects', '/inbox']
+const PHONE_TABS = ['/', '/tasks', '/subjects', '/training', '/inbox']
 const MORE_ICON = 'M5 12h.01M12 12h.01M19 12h.01'
 const MORE = LINKS.filter((l) => !PHONE_TABS.includes(l.href))
 

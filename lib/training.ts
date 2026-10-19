@@ -78,12 +78,16 @@ export type Rule =
   | { id?: string; kind: 'max_hard'; n: number; pairs: [TrainingType, TrainingType][]; label: string; enabled: boolean; strength?: Strength }
   | { id?: string; kind: 'after_double'; label: string; enabled: boolean; strength?: Strength }
 
-/** The five rules from my-spec 31, used until Nat changes one ("check with Owen"). */
+/** The five rules from my-spec 31, used until Nat changes one ("check with Owen"). Queue item 6 (19 Oct, his words):
+ *  light lower is fine the day before a game (only moderate/heavy lower is kept off it; plyo stays off it at any
+ *  intensity: the last rule), and Tuesday is school football then Owen, so Owen's speed session is fine on a football
+ *  day. Still guesses: his saved rules win. The plyo rule is last so the older rules keep their places (TR refs). */
 export const DEFAULT_RULES: Rule[] = [
-  { kind: 'gap', what: ['lower', 'plyo'], near: ['sprint', 'match'], side: 'before', days: 1, label: 'No Lower or plyo the day before a sprint session or match', enabled: true },
+  { kind: 'gap', what: ['lower'], near: ['sprint', 'match'], side: 'before', days: 1, minLoad: 'moderate', label: 'No Lower the day before a sprint session or match (light lower is fine)', enabled: true },
   { kind: 'gap', what: ['sprint', 'plyo'], near: ['lower'], side: 'after', days: 1, label: 'Sprint and plyo when fresh: not the day after (or later the same day as) Lower', enabled: true },
-  { kind: 'max_hard', n: 1, pairs: [['upper', 'football']], label: 'At most one hard session a day (Upper is fine on football days)', enabled: true },
+  { kind: 'max_hard', n: 1, pairs: [['upper', 'football'], ['sprint', 'football']], label: 'At most one hard session a day (Upper or Owen’s speed is fine on football days)', enabled: true },
   { kind: 'after_double', label: 'After a double-session day, a lighter next day', enabled: true },
+  { kind: 'gap', what: ['plyo'], near: ['sprint', 'match'], side: 'before', days: 1, label: 'No plyo the day before a sprint session or match (not even light)', enabled: true },
 ]
 
 /** A best guess from the name: only a suggestion. The bot asks him once (lib/telegram/asktype.ts) and stores his answer;

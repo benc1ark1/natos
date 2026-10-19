@@ -37,7 +37,7 @@ test('"Owen moved training to <day> this week" knocks on the plan: Lower moves o
   await ask(`Owen moved training to ${weekday(D(2))} 6pm this week`, [{ ref: 'Owen training', date: D(0), date_to: D(2), time: '18:00', words: `${weekday(D(2))} 6pm` }])
   const card = last().text
   assert.match(card, /↪️ <b>Knock-on in your plan<\/b>/)
-  assert.match(card, new RegExp(`• Lower: ${day(D(1))} 16:10 → .*No Lower or plyo the day before`))
+  assert.match(card, new RegExp(`• Lower: ${day(D(1))} 16:10 → .*No Lower the day before`))
   assert.equal((await q(`select on_date::text d, status from plan_blocks where id = $1`, [b.id]))[0].d, D(1), 'nothing moves before ✅')
   await tap('Apply')
   assert.match(last().text, /moved in your plan/)
@@ -77,7 +77,8 @@ test('clash option 1 cancels the other session that day; Undo puts both back', {
 
 test('a fixed session that now breaks a training rule is flagged (the app can’t move fixed sessions: he decides)', { skip }, async () => {
   await add('events', { title: 'Football', repeat_days: [T().isoDow(D(1))], start_time: '18:00', end_time: '19:30', training_type: 'football' })
-  await add('events', { title: 'Owen training', repeat_days: [T().isoDow(D(2))], start_time: '07:00', end_time: '07:45', training_type: 'sprint' })
+  // plyo (queue item 6: Owen's speed session is fine on a football day now — "Tue school football then Owen")
+  await add('events', { title: 'Owen training', repeat_days: [T().isoDow(D(2))], start_time: '07:00', end_time: '07:45', training_type: 'plyo' })
   await block({ date: D(2), start: '16:10', end: '17:00', title: 'Physics homework' })
   await ask(`Owen moved to ${weekday(D(1))} morning`, [{ ref: 'Owen training', date: D(2), date_to: D(1), time: '07:00', words: `${weekday(D(1))} morning` }])
   assert.match(last().text, /⚠️ Owen training and Football on .*: 2 hard sessions in a day \(At most one hard session a day/)
@@ -147,7 +148,7 @@ test('rules are data: "no plyo within a day of a match" is saved (with the defau
   assert.match(last().text, /📏 New rule: <b>No plyo within 24 h of a match<\/b>/)
   await tap('Apply')
   const rows = await q(`select label, enabled from training_rules order by sort_order, created_at`)
-  assert.equal(rows.length, 5, 'the four defaults written down, plus the new rule')
+  assert.equal(rows.length, 6, 'the five defaults written down (queue item 6 split the plyo rule out), plus the new rule')
   assert.ok(rows.some((r) => r.label === 'No plyo within 24 h of a match' && r.enabled))
   await tap('Undo')
   assert.deepEqual((await q(`select enabled from training_rules where label = 'No plyo within 24 h of a match'`)), [{ enabled: false }])
