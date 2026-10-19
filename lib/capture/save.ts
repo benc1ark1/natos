@@ -13,7 +13,7 @@ import { logMistake, markStageDone, undoStage } from '../study-data'
 // Every message is only shown after the database confirms.
 
 /** What a saved card can undo from Telegram (after the request has finished): a log, a stage done, a mistake. */
-export type UndoRef = { table: 'target_logs' | 'topic_progress' | 'mistakes'; id: string }
+export type UndoRef = { table: 'target_logs' | 'topic_progress' | 'mistakes' | 'tasks'; id: string }
 type Saved = { message?: string; error?: string; task?: Task; undo?: () => Promise<string | null>; logId?: string; undoRef?: UndoRef }
 const where: Record<string, string> = { inbox: 'Inbox', today: 'Today', this_week: 'This week', this_month: 'Later', someday: 'Someday' }
 const failed = (what: string, e: { message: string } | null) => ({ error: `${what} not saved: ${e?.message ?? 'unknown error'}. Your text is still in the box.` })
@@ -42,7 +42,8 @@ export async function saveProposal(sb: SupabaseClient, p: Proposal, text: string
       const res = await captureToInbox(sb, text, {
         title: p.title.trim().slice(0, 200), status, subject_id: p.subject_id, category_id,
         importance: p.kind === 'task' ? p.importance : 'nice',
-        due_at: p.kind === 'task' && p.due ? dueAtFromDate(p.due) : null,
+        due_at: p.kind === 'task' && p.due ? (p.due_time ? zonedToUTC(p.due, p.due_time) : dueAtFromDate(p.due)) : null,
+        ...(p.details ? { details: p.details.slice(0, 2000) } : {}),
         window_label: p.kind === 'task' ? p.window_label : null,
         window_end: p.kind === 'task' && !p.due ? p.window_end : null,
         duration_minutes: p.duration_minutes, origin: p.origin, project_id: p.project_id, hand_in: p.hand_in,

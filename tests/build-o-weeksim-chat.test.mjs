@@ -223,8 +223,12 @@ test('O15: a whole week through the bot, Monday’s first brief to Sunday’s re
       const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')
       await processMail(await openOwnerSession(), OWNER_TG)
       collect('Wed 16:30 email')
-      await tapOn(lastOf(/📧 <b>Ms Patel<\/b>/), '✅ Save')
-      collect('Wed 16:31 save')
+      // a teacher at his school's own domain: saved straight away, with ↩️ Undo (no ✅ needed); "before Friday" = by Thursday
+      assert.ok(lastOf(/📚 <b>Added to your tasks<\/b> from Ms Patel <i>\(school\)<\/i>: <b>Read chapter 5<\/b>/), 'added from the email by itself')
+      const [read] = await chat.q(`select due_at, origin from tasks where title = 'Read chapter 5' and archived_at is null`)
+      assert.equal(T().dateISOOf(read.due_at.toISOString()), D(3))
+      assert.equal(read.origin, 'school')
+      collect('Wed 16:31 added')
       const fit = lastOf(/➕ Fit <b>Read chapter 5<\/b>/)
       if (fit) { await tapOn(fit, '✅ Add'); collect('Wed 16:32 add') }
       chat.noSurprises()

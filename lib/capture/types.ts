@@ -20,6 +20,8 @@ export type Proposal = {
   subject_id: string | null
   importance: 'must' | 'nice'
   due: string | null                // YYYY-MM-DD
+  due_time?: string | null          // HH:MM London, when the words give a clock time (homework emails)
+  details?: string | null           // the task's notes (homework emails: what to do)
   window_label: string | null       // as said: "this weekend"
   window_end: string | null         // last OK day
   duration_minutes: number | null

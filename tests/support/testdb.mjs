@@ -48,6 +48,7 @@ export const SQL_FILES = [
   'supabase/today.sql',
   'supabase/gym.sql',
   'supabase/weekly.sql',
+  'supabase/mail-homework.sql',
 ]
 
 function readEnvFile(file) {

@@ -6,11 +6,14 @@ export type Account = (typeof ACCOUNTS)[number]
 export type MailKind = 'homework' | 'reply' | 'event' | 'ignore'
 export type MailRule = { id: string; pattern: string; action: 'flag' | 'ignore'; label: string | null; archived_at?: string | null }
 
-/** One email as the script sends it: never the body, only Gmail's preview line. */
+/** One email as the script sends it: Gmail's preview line, and the text only when it looks like homework (the script
+ *  decides: homework words, or a sender the app named as setting homework). */
 export type Incoming = {
   id: string; thread: string | null; from: string; subject: string; snippet: string; received: string
-  labels: string[]; automated: boolean
+  labels: string[]; automated: boolean; body?: string
 }
+
+export const MAX_BODY = 4000
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim().slice(0, max) : '')
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
@@ -39,6 +42,7 @@ export function readIncoming(body: unknown): { account: Account; address: string
       received: new Date(received).toISOString(),
       labels: Array.isArray(x.labels) ? x.labels.filter((l): l is string => typeof l === 'string' && /^CATEGORY_[A-Z]+$/.test(l)).slice(0, 5) : [],
       automated: x.automated === true,
+      ...(typeof x.body === 'string' && x.body.trim() ? { body: x.body.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim().slice(0, MAX_BODY) } : {}),
     })
   }
   const address = str(b.address, 320)

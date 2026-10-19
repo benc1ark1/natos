@@ -5,7 +5,14 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { bearer, secretMatches } from '../telegram/guard'
 import { openOwnerSession } from '../telegram/owner-session'
 import { readIncoming } from './rules'
-import { ingest } from './watcher'
+import { homeworkFrom, ingest } from './watcher'
+
+/** The senders whose emails the script sends with their text (his homework senders and his school's domain). */
+async function bodyFrom(sb: SupabaseClient): Promise<string[]> {
+  const planning = await sb.from('profiles').select('planning').maybeSingle().then((r) => r.data?.planning ?? null)
+  const f = await homeworkFrom(sb, planning)
+  return [...f.listed, ...(f.school ? [`@${f.school}`] : [])].slice(0, 50)
+}
 
 const MAX_BYTES = 200_000
 
@@ -20,7 +27,7 @@ export async function receiveMail(auth: string | null, raw: string): Promise<{ s
   try {
     const sb = await openOwnerSession()
     const added = await ingest(sb, input)
-    return { status: 200, json: { ok: true, added }, sb, added }
+    return { status: 200, json: { ok: true, added, bodyFrom: await bodyFrom(sb).catch(() => []) }, sb, added }
   } catch (e) {
     return { status: 500, json: { ok: false, error: e instanceof Error ? e.message : 'Couldn’t save the emails.' } }
   }
