@@ -57,13 +57,20 @@ export async function typicalOwenPlan(sb: SupabaseClient, data: ViewData): Promi
   return { plan, days, from }
 }
 
-/** "Hi Owen, …": the days, plus what's fixed in his week, ready to copy. */
-export function owenMessage(days: DayMap, planning: unknown, plan: OptPlan): string {
+/** "Hi Owen, …": the days, plus what's fixed in his week, ready to copy. `week` (/owen, queue item 6): this week's
+ *  message instead: the days, his free slots if a session needs to move, then the fixed sessions. */
+export function owenMessage(days: DayMap, planning: unknown, plan: OptPlan, week?: { free: string }): string {
   const sessions = activeSessions(planning)
   const byDay = new Map<number, string[]>()
   for (const [k, ds] of Object.entries(days)) for (const d of ds) byDay.set(d, [...(byDay.get(d) ?? []), sessions.find((s) => s.key === k)?.name.toLowerCase() ?? k])
   const parts = [...byDay.entries()].sort((a, b) => a[0] - b[0]).map(([d, names]) => `${names.join(' and ')} on ${DAY_LONG[d - 1]}`)
   const fixed = [...new Set(plan.days.flatMap((x) => x.sessions.filter((s) => s.fixed).map((s) => `${s.title} ${DAY3[isoDow(x.date) - 1]}`)))]
+  // queue item 6 (/owen): this week's days (his sessions vary, so no session names) and his free slots
+  if (week) {
+    const names = [...byDay.keys()].sort((a, b) => a - b).map((d) => DAY_LONG[d - 1])
+    const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0] ?? ''
+    return `Hi Owen, this week I can do our sessions on ${list}.${week.free ? ` If one needs to move, I’m free ${week.free}.` : ''}${fixed.length ? ` Already fixed: ${fixed.join(', ')}.` : ''} Does that work for you?`
+  }
   return `Hi Owen, the days I can train best are: ${parts.join(', ')}.${fixed.length ? ` My fixed sessions are ${fixed.join(', ')}.` : ''} Does that work for you?`
 }
 

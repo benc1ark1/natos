@@ -127,11 +127,13 @@ export const DEFAULT_SESSIONS: SessionType[] = [
   { key: 'injury', name: 'Injury prevention', type: 'injury', intensity: 'moderate', minutes: null, perWeek: 1, places: ['home'], owen: true, target: null },
   { key: 'core', name: 'Core', type: 'core', intensity: 'light', minutes: null, perWeek: 1, places: ['home'], owen: true, target: null, noLower: true },
   { key: 'stretch', name: 'Stretching', type: 'mobility', intensity: 'light', minutes: null, perWeek: 2, maxPerWeek: 4, places: ['home'], flexible: true, target: null },
-  { key: 'upper', name: 'Upper', type: 'upper', intensity: 'heavy', minutes: null, perWeek: 2, maxPerWeek: 3, wants: ['upper_machines', 'cables', 'chest_machines', 'free_weights'], places: ['puregym', 'school_gym'], target: 'Upper' },
+  // queue item 6 (19 Oct, his words): "upper 2×/week heavy ~90 min, Mon PureGym + Sat" — 2× (not 2–3), always heavy;
+  // the 90 minutes stay a guess until he says (GUESS_MINUTES); its days are his fixed days (owen_days "upper=mon, sat")
+  { key: 'upper', name: 'Upper', type: 'upper', intensity: 'heavy', minutes: null, perWeek: 2, noLighter: true, wants: ['upper_machines', 'cables', 'chest_machines', 'free_weights'], places: ['puregym', 'school_gym'], target: 'Upper' },
 ]
 
 /** Minutes guessed until he says. */
-export const GUESS_MINUTES: Record<string, number> = { speed: 60, heavy_lower: 60, injury: 30, core: 20, stretch: 15, upper: 60 }
+export const GUESS_MINUTES: Record<string, number> = { speed: 60, heavy_lower: 60, injury: 30, core: 20, stretch: 15, upper: 90 }
 
 export function sessionTypes(planning: unknown): SessionType[] {
   const v = obj(planning).sessionTypes

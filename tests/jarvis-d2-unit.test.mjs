@@ -15,8 +15,8 @@ const rules = DEFAULT_RULES
 
 test('each rule, broken on purpose, is caught (and the allowed pair is not)', () => {
   const p = (sessions) => ruleProblems(sessions, rules).map((x) => x.rule)
-  assert.match(p([flex(1, 'lower', 'Lower'), fixed(2, 'sprint', 'Owen')]).join(), /No Lower or plyo the day before/)
-  assert.match(p([flex(4, 'plyo', 'Plyo'), fixed(5, 'match', 'Match')]).join(), /No Lower or plyo the day before/)
+  assert.match(p([flex(1, 'lower', 'Lower'), fixed(2, 'sprint', 'Owen')]).join(), /No (?:Lower|plyo) the day before/)
+  assert.match(p([flex(4, 'plyo', 'Plyo'), fixed(5, 'match', 'Match')]).join(), /No (?:Lower|plyo) the day before/)
   assert.match(p([flex(0, 'lower', 'Lower'), fixed(1, 'sprint', 'Owen')]).join(), /Sprint and plyo when fresh|day before/)
   assert.match(p([flex(0, 'lower', 'Lower', '07:00'), fixed(0, 'sprint', 'Owen', '18:00')]).join(), /day before|when fresh/, 'Lower earlier the same day as a sprint')
   assert.match(p([fixed(2, 'football', 'Football'), flex(2, 'lower', 'Lower')]).join(), /At most one hard session a day/)

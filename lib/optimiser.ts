@@ -78,9 +78,48 @@ export function owenPins(w: OptWorld, needs: LoadNeed[], days: DayMap | null): M
   return pins
 }
 
-/** The days he gave Owen, as a strong preference (another day costs OWEN_MOVE): never forced onto a day with no room. */
+/** The days he gave Owen, as a strong preference (another day costs OWEN_MOVE): never forced onto a day with no room.
+ *  Queue item 6: Owen's days are fixed (Owen comes then; his sessions vary), so moving one of Owen's sessions costs
+ *  OWEN_FIXED (more than going lighter: the session goes lighter on its day rather than moving), and leaving it out
+ *  costs 3× a normal session. Nat's own fixed days ("upper Mon + Sat") cost OWEN_MOVE to move and 1.5× to leave out:
+ *  less than Owen's, so in a busy week his own session gives way first. */
 const OWEN_MOVE = 25
-const withOwenDays = (needs: LoadNeed[], pins: Map<string, Pin>) => needs.map((n) => (pins.has(n.key) ? { ...n, preferred: pins.get(n.key)!.date, preferStart: pins.get(n.key)!.start ?? null, preferCost: OWEN_MOVE } : n))
+const OWEN_FIXED = 80
+function withOwenDays(needs: LoadNeed[], pins: Map<string, Pin>, w: Pick<OptWorld, 'sessions' | 'settings'>, required: boolean): LoadNeed[] {
+  const tbc = weightsOf(w.settings).tbc
+  return needs.map((n) => {
+    if (!pins.has(n.key)) return n
+    const owen = !!w.sessions.find((s) => s.key === n.session)?.owen
+    return { ...n, preferred: pins.get(n.key)!.date, preferStart: pins.get(n.key)!.start ?? null, preferCost: owen ? OWEN_FIXED : OWEN_MOVE,
+      ...(required && n.skipCost == null ? { skipCost: (owen ? 3 : 1.5) * tbc } : {}) }
+  })
+}
+
+/** Two worked upper sessions closer than his upper recovery time: one is left out (never placed < 48 h apart) — the one
+ *  moved off its fixed day if there is one (his Saturday 09:30 stays), else the later one. */
+function spaceUppers(plan: LoadPlan, w: OptWorld, pins: Map<string, Pin>, needs: LoadNeed[]): LoadPlan {
+  const hours = w.settings.upperRecoveryH
+  const at = (s: { date: string; start: string }) => Date.parse(`${s.date}T00:00:00Z`) / 3_600_000 + minutesOf(s.start) / 60
+  const worked = [...w.fixed.filter((s) => s.cost.upper >= w.settings.areaHeavy), ...plan.placed.filter((s) => s.type === 'upper' && s.cost.upper >= w.settings.areaHeavy)]
+    .sort((a, b) => at(a) - at(b))
+  const drop = new Set<string>()
+  const free = (x: (typeof worked)[number]) => !x.fixed && !pins.get(x.key)?.date
+  const moved = (x: (typeof worked)[number]) => { const p = needs.find((n) => n.key === x.key)?.preferred; return !!p && p !== x.date }
+  let prev: (typeof worked)[number] | null = null
+  for (const s of worked) {
+    if (prev && at(s) - at(prev) < hours && (free(s) || free(prev))) {
+      if (free(prev) && (!free(s) || (moved(prev) && !moved(s)))) { drop.add(prev.key); prev = s } else drop.add(s.key)
+      continue
+    }
+    prev = s
+  }
+  if (!drop.size) return plan
+  return {
+    ...plan,
+    placed: plan.placed.filter((s) => !drop.has(s.key)),
+    tbc: [...plan.tbc, ...plan.placed.filter((s) => drop.has(s.key)).map((s) => ({ key: s.key, title: s.title, reason: `upper body needs ${hours} h between sessions, and no other day fits this week` }))],
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Where a session can happen on a day: places, travel, the after-school window, Friday evening
@@ -143,7 +182,7 @@ export function optimise(w: OptWorld, opts: { only?: string[] | null; pins?: Map
   const out = new Set(opts.exclude ?? [])   // sessions he left out this week (🔁 → Leave it out)
   const all = setupNeeds(w, opts.only)
   const owen = owenPins(w, [...all.required, ...all.optional], w.owenDays)
-  const required = withOwenDays(all.required.filter((n) => !out.has(n.key)), owen), optional = withOwenDays(all.optional.filter((n) => !out.has(n.key)), owen)
+  const required = withOwenDays(all.required.filter((n) => !out.has(n.key)), owen, w, true), optional = withOwenDays(all.optional.filter((n) => !out.has(n.key)), owen, w, false)
   const pins = new Map(opts.pins ?? new Map())
   const world: LoadWorld = { ...w, pins, where: (n, d) => whereOptions(w, n, d) }
   const run = (needs: LoadNeed[], p = pins) => planLoad(needs, { ...world, pins: p })
@@ -200,6 +239,8 @@ export function optimise(w: OptWorld, opts: { only?: string[] | null; pins?: Map
   // anything himself), they're the plan.
   const alt = opts.compare !== false ? baselinePlan(w, needs, world) : null
   if (alt && !pins.size && alt.cost < chosen.cost - 1) chosen = alt
+  chosen = spaceUppers(chosen, w, pins, needs)
+  if (upper) upper = { ...upper, count: chosen.placed.filter((x) => x.type === 'upper').length + (w.done.get('upper') ?? 0) }
   // stretching and other flexible units: where it's easy, after everything else
   const flexible = flexibleUnits(w, chosen, opts.only ?? null)
   const placed = [...chosen.placed, ...flexible].sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))
