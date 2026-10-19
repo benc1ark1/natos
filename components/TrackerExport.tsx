@@ -31,9 +31,10 @@ export default function TrackerExport({ onClose }: { onClose: () => void }) {
       <div className="ch"><span className="lbl" id="exp-h">Export my tracker</span>
         <button type="button" className="btn sm ghost" onClick={onClose}>Close</button></div>
       <ol className={css.steps}>
-        <li>Download a tab’s CSV below.</li>
-        <li>In your Google Sheet, open the same tab and click cell <b>A4</b> (where its table starts).</li>
-        <li><b>File → Import → Upload</b> the CSV → <b>Replace data at selected cell</b>.</li>
+        <li>On a computer (the Sheets phone app has no Import), download a tab’s CSV below.</li>
+        <li>In your Google Sheet open the same tab. Select <b>A4</b> down to the bottom of the tab and press <b>Delete</b>, then click <b>A4</b>.</li>
+        <li><b>File → Import → Upload</b> the CSV → <b>Replace data at selected cell</b> → <b>Import data</b>.</li>
+        <li><b>Programmes</b>: the first time, add a new tab for it (or skip it).</li>
       </ol>
       {error && <ErrorBox message={`Couldn’t build the export: ${error}`} onRetry={reload} />}
       {!data && loading && <Loading lines={4} />}

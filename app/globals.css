@@ -315,7 +315,7 @@ button.eb:hover { filter: brightness(1.25); }
 @media (max-width: 480px) {
   .brand { gap: 8px; font-size: 11px; letter-spacing: .12em; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .navr .signout { font-size: 10.5px; letter-spacing: .08em; padding: 0 6px; }
-  .navr .wide { display: none; }
+  .navr .wide, .navr a.signout.wide { display: none; }
 }
 
 /* ---------- routines (reference only, from the design's routine page) ---------- */
@@ -652,4 +652,4 @@ button.wn:hover { text-decoration: underline; text-underline-offset: 3px; }
   .navlink { padding: 0 10px; }
   .nav { gap: 16px; }
 }
-.navr a.signout { text-decoration: none; }
+.navr a.signout { text-decoration: none; display: inline-flex; align-items: center; }

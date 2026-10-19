@@ -22,10 +22,10 @@ const LINKS = [
 
 const isOn = (href: string, path: string) => (href === '/' ? path === '/' : path.startsWith(href))
 
-// The phone's tab bar keeps the everyday ones; the rest are one tap away under More.
+// The phone's tab bar keeps the everyday ones; the rest are one tap away under More (with Help, item 8).
 const PHONE_TABS = ['/', '/tasks', '/subjects', '/training', '/inbox']
 const MORE_ICON = 'M5 12h.01M12 12h.01M19 12h.01'
-const MORE = LINKS.filter((l) => !PHONE_TABS.includes(l.href))
+const MORE = [...LINKS.filter((l) => !PHONE_TABS.includes(l.href)), { href: '/help', label: 'Help', icon: '' }]
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -38,7 +38,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   // sign-in pages (incl. the Telegram Mini App entry): no nav, tabs, Export or Sign out
   if (pathname.startsWith('/login') || pathname === '/tg') return <div className="wrap">{children}</div>
 
-  const section = pathname.startsWith('/routines') ? 'Routine' : pathname.startsWith('/guides') ? 'Guides' : LINKS.find((l) => isOn(l.href, pathname))?.label ?? ''
+  const section = pathname.startsWith('/routines') ? 'Routine' : pathname.startsWith('/maths') ? 'Maths' : pathname.startsWith('/guides') ? 'Guides' : pathname.startsWith('/help') ? 'Help' : LINKS.find((l) => isOn(l.href, pathname))?.label ?? ''
   const moreOn = MORE.some((l) => isOn(l.href, pathname))
 
   async function signOut() {
@@ -61,6 +61,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="navr">
           {now && <span className="date">{navDate(todayISO())}<span className="sep">·</span>{timeOf(now)}</span>}
+          <Link className="signout wide" href="/help">Help</Link>
           <ExportButton toast={toast.show} />
           <button className="signout" onClick={signOut}>Sign out</button>
         </div>

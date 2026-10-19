@@ -9,7 +9,7 @@
 import 'server-only'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadStudyWorld } from '../tracker/data'
-import { planStudyDay } from '../tracker/engine'
+import { HOMEWORK_DAYS, planStudyDay } from '../tracker/engine'
 import type { StudyWorld } from '../tracker/types'
 import { loadActWorld } from '../act/data'
 import { actPicks } from '../act/engine'
@@ -23,7 +23,7 @@ import { expandEvents, isSchool } from '../events'
 import { boundsOf, hm } from '../setup'
 import { setting } from '../settings'
 import { deadlineLabel, deadlineOf } from '../tasks'
-import { addDays, dateISOOf, isoDow, minutesOf, timeOf } from '../time'
+import { addDays, dateISOOf, isoDow, minutesOf, timeOf, weekStartISO } from '../time'
 import type { Task } from '../types'
 import { planTraining } from '../week'
 import { isLowRecovery, whoopDay } from '../whoop/sync'
@@ -72,11 +72,14 @@ export function taskPicks(tasks: Task[], date: string): Pick[] {
   return out.sort((a, b) => a.tier - b.tier || (deadlineOf(tasks.find((t) => t.id === a.taskId)!) ?? '9').localeCompare(deadlineOf(tasks.find((t) => t.id === b.taskId)!) ?? '9'))
 }
 
-/** Yesterday's block that wasn't ticked, as a pick for today (what to open and what done moves forward come with it). */
-export function rolledPick(b: SavedBlock): Pick {
+/** Yesterday's block that wasn't ticked, as a pick for today (what to open and what done moves forward come with it).
+ *  `date`: today — a dated key ("mistakes:<yesterday>:tests") becomes today's, so the planner's fresh version replaces it
+ *  instead of the same redo showing up once for every day it was left (QA week sim). */
+export function rolledPick(b: SavedBlock, date?: string): Pick {
   const done: Pick['done'] = b.done_hint ?? (b.task_id ? { kind: 'task', taskId: b.task_id } : { kind: 'block' })
+  const key = b.pick_key ?? (b.task_id ? `task:${b.task_id}` : `block:${b.id}`)
   return {
-    key: b.pick_key ?? (b.task_id ? `task:${b.task_id}` : `block:${b.id}`), kind: done.kind === 'task' ? 'task' : 'review', tier: TIER.boost, subject: null,
+    key: date ? key.replace(/^mistakes:\d{4}-\d{2}-\d{2}/, `mistakes:${date}`) : key, kind: done.kind === 'task' ? 'task' : 'review', tier: TIER.boost, subject: null,
     title: b.title, open: b.open_text ?? '', url: b.open_url ?? null, minutes: Math.max(10, minutesOf(b.end_time.slice(0, 5)) - minutesOf(b.start_time.slice(0, 5))),
     why: (b.why ?? '').replace(/^from (yesterday|\w{3}) · /, ''), done, heavy: b.kind === 'focus',
     taskId: b.task_id ?? (done.kind === 'task' ? done.taskId : null), topicId: b.topic_id ?? (done.kind === 'topic' ? done.topicId : null),
@@ -194,7 +197,9 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
   if (!trainingIn.length && energy !== 'ill' && opts.save) {
     try {
       // the whole week is placed (so today gets what's best for the week), then today's sessions are taken
-      const w = await loadWorld(sb, data)
+      // (this calendar week: at the weekend the bot's "week" runs on to next Sunday, which moved Saturday's fixed upper
+      // to next Monday because this week's done sessions were counted against next week's days — QA week sim)
+      const w = await loadWorld(sb, data, { from: date, to: addDays(weekStartISO(date), 6) })
       const placed = planTraining({ ...w, changes: holidayChanges(w.events, w.changes, planning, w.from, w.to) }).placed.filter((p) => p.date === date && (date !== today || minutesOf(p.start) >= nowMin))
       newTraining = placed.map((p) => {
         const b = blockOf(p)
@@ -213,13 +218,17 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
   // task), unless it got done another way since (reported by message, task completed)
   const yesterday = addDays(date, -1)
   const rolledPicks = before.rows.filter((b) => b.status === 'planned' && b.kind !== 'training' && b.kind !== 'rest')
-    .map((b) => rolledPick(b)).filter((p) => !(p.done.kind === 'task' && !data.tasks.some((t) => t.id === (p.done as { taskId: string }).taskId)))
+    .map((b) => rolledPick(b, date)).filter((p) => !(p.done.kind === 'task' && !data.tasks.some((t) => t.id === (p.done as { taskId: string }).taskId)))
     .filter((p) => !effectDone({ key: p.key, done: p.done } as TodayItem, { date, tasks: data.tasks, world, act }))
   const rolled: Rolled[] = rolledPicks.map((p) => ({ key: p.key, title: p.title, from: yesterday }))
   const homeworkIds = new Set(world.homework.map((h) => h.id))
   const mustDo = tasks.filter((p) => p.tier <= TIER.homework && !homeworkIds.has(p.taskId ?? '')).length
-  const rolledExtra = rolledPicks.filter((r) => !tasks.some((t) => t.key === r.key && t.tier <= TIER.homework)).length
-  const picks = planner(studyMinutes, Math.max(1, clampItems(max) - (trainingIn.length ? 1 : 0) - mustDo - rolledExtra))
+  // (rolled homework is the planner's own homework pick again, so it isn't extra; and every homework due gets a pick:
+  // homework is never dropped for room — QA week sim: homework newly due was lost when yesterday's items rolled on)
+  const rolledExtra = rolledPicks.filter((r) => !tasks.some((t) => t.key === r.key && t.tier <= TIER.homework) && !(r.done.kind === 'task' && homeworkIds.has(r.done.taskId))).length
+  const dueOf = (at: string) => (at.includes('T') ? dateISOOf(at) : at.slice(0, 10))
+  const homeworkDue = world.homework.filter((h) => h.dueAt && dueOf(h.dueAt) <= addDays(date, HOMEWORK_DAYS)).length
+  const picks = planner(studyMinutes, Math.max(1, homeworkDue, clampItems(max) - (trainingIn.length ? 1 : 0) - mustDo - rolledExtra))
   const plan = buildToday({ date, mode, slots, settings, budget, energy, picks, tasks, training: trainingIn, fixed, max, rolled, rolledPicks })
   let sqlMissing = blocks.sqlMissing
   if (opts.save && (plan.items.length || plan.more)) {
