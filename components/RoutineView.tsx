@@ -8,7 +8,7 @@ import { isoDow, todayISO } from '@/lib/time'
 import type { Habit, HabitItem } from '@/lib/types'
 import { Empty, ErrorBox, Loading, useLoad } from './ui'
 
-type Step = { id: string; habit_item_id: string; title: string; sort_order: number }
+type Step = { id: string; habit_item_id: string; title: string; sort_order: number; archived_at?: string | null }
 const DAY = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const MODE_KEY = 'routine-mode'
 
@@ -18,12 +18,13 @@ export default function RoutineView({ id }: { id: string }) {
     const sb = getSupabase()
     const [h, items] = await Promise.all([
       sb.from('habits').select('id,name,is_active,sort_order,days_of_week').eq('id', id).maybeSingle(),
-      sb.from('habit_items').select('id,habit_id,name,is_required,sort_order,guide_url,guide_id,condition_label,days_of_week').eq('habit_id', id),
+      // '*': blocks and steps removed by chat are archived (archived_at, supabase/life.sql) and left out here
+      sb.from('habit_items').select('*').eq('habit_id', id),
     ])
     if (h.error) throw new Error(`Couldn't load the routine: ${h.error.message}`)
-    const blocks = blocksOf(id, rows<HabitItem>(items, 'routine blocks'))
+    const blocks = blocksOf(id, rows<HabitItem & { archived_at?: string | null }>(items, 'routine blocks').filter((b) => !b.archived_at))
     const steps = blocks.length
-      ? rows<Step>(await sb.from('routine_steps').select('id,habit_item_id,title,sort_order').in('habit_item_id', blocks.map((b) => b.id)), 'steps')
+      ? rows<Step>(await sb.from('routine_steps').select('*').in('habit_item_id', blocks.map((b) => b.id)), 'steps').filter((s) => !s.archived_at)
       : []
     return { habit: h.data as Habit | null, blocks, steps }
   })
@@ -58,7 +59,7 @@ export default function RoutineView({ id }: { id: string }) {
         </div>
       </div>
 
-      {data.blocks.length === 0 && <Empty>No blocks in this routine yet. Import them from Notion on the <Link href="/guides/import">Guides</Link> page, or add them in Supabase (habit_items).</Empty>}
+      {data.blocks.length === 0 && <Empty>No blocks in this routine yet. Import them from Notion on the <Link href="/guides/import">Guides</Link> page, or tell the bot (“add stretch 10 min to my morning routine”).</Empty>}
 
       <ol className="blocks">
         {data.blocks.map((b, i) => {
