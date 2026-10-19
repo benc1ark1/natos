@@ -44,10 +44,14 @@ export type FastEnv = {
 
 /** A message a plug-in understood without the AI. */
 export type FastResult =
-  | { kind: 'actions'; actions: PluginRawAction[]; head?: string }               // → checked, then the usual ✅ card
+  // → checked, then the usual ✅ card. `refs`: the records its actions name ("E1" → that event), so a fast path can
+  //   use built-in ops that need a ref (event_move, event_cancel, …) without the brain's snapshot
+  | { kind: 'actions'; actions: PluginRawAction[]; head?: string; refs?: [string, PluginRef][] }
   | { kind: 'answer'; html: string; buttons?: Button[][] }                        // → sent as is (read-only)
   | { kind: 'idea'; request: string }                                             // → "I can't do that yet" + App ideas
-  | { kind: 'handled' }                                                           // → the plug-in already replied
+  // → the plug-in already replied. `intent`: what it was, for the conversation log ('instruction' if it made a ✅ card;
+  //   'question' when not given)
+  | { kind: 'handled'; intent?: 'question' | 'instruction' | 'new' | 'plan' | 'chat' | 'unclear' }
 
 export type CommandEnv = { sb: SupabaseClient; chatId: number; today: string; now: Date; args: string; appUrl: string | null }
 export type CommandResult = { html: string; buttons?: Button[][] } | null

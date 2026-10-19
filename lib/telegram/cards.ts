@@ -1,7 +1,9 @@
 // Server-only: cards (a proposal waiting for Nat's tap) and what each button does.
 // Two kinds: a new item (✅ Save / 📥 Inbox) and a list of changes to saved records (✅ Apply, then ↩️ Undo).
-// Nothing is saved until Nat taps. ✏️ Edit / ✏️ Change keeps the card waiting for his correction;
+// Nothing is saved until Nat taps. ✏️ Change keeps the card waiting for his correction;
 // a corrected card replaces the old one (status 'replaced'). Rows are never deleted.
+// Buttons are the same everywhere: ✅ save / apply · ✏️ change · ❌ cancel (the callback data never changes, so a tap on
+// an older message still works).
 import 'server-only'
 import { sourceLabel } from '../lists'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -28,6 +30,7 @@ import { tickBlock, tickTask } from './ticks'
 import { recordSuggestion } from './roi'
 import type { Gap } from '../gaps'
 import { MEMORY_MINUTES, plain, remember, say, type Ref } from './turns'
+import { soon } from './speed'
 import { draftReply } from '../mail/draft'
 import { pluginAfterApply, pluginTap } from './plugins'
 
@@ -51,10 +54,19 @@ const day = (iso: string) => `${dowShort(iso)} ${shortDate(iso)}`
 export type Ask = { question: string; options: { label: string; actions: Action[] }[] }
 type Clash = { clash: string; options: { label: string; actions: Action[]; ripple: Ripple }[] }
 
+type ViewData = Awaited<ReturnType<typeof loadViewData>>
+// The week around one message's data, read once (the brain path starts it while the AI thinks: lib/telegram/converse.ts)
+const worlds = new WeakMap<ViewData, ReturnType<typeof loadWorld>>()
+export function worldOf(sb: SupabaseClient, data: ViewData): ReturnType<typeof loadWorld> {
+  let w = worlds.get(data)
+  if (!w) { w = loadWorld(sb, data); w.catch(() => null); worlds.set(data, w) }
+  return w
+}
+
 /** What a list of changes knocks on in this week's plan, or two options if it clashes with another session (lib/telegram/ripple.ts). */
-export async function planEffect(sb: SupabaseClient, actions: Action[], data?: Awaited<ReturnType<typeof loadViewData>>): Promise<{ ripple?: Ripple; clash?: Clash }> {
+export async function planEffect(sb: SupabaseClient, actions: Action[], data?: ViewData): Promise<{ ripple?: Ripple; clash?: Clash }> {
   if (!actions.length) return {}
-  const world = await loadWorld(sb, data ?? await loadViewData(sb, todayISO()))
+  const world = await worldOf(sb, data ?? await loadViewData(sb, todayISO()))
   const clash = clashOptions(world, actions)
   if (clash) return { clash: { clash: clash.clash, options: clash.options.map((o) => ({ ...o, ripple: knockOn(world, o.actions) })) } }
   return { ripple: knockOn(world, actions) }
@@ -79,9 +91,9 @@ function actionCardBody(id: string, actions: Action[], problems: string[], opts:
     [{ text: '✋ Skip this part', callback_data: `q:${id}:skip` }],
   ] : []
   const buttons: Button[][] = !actions.length
-    ? [...askRows, [{ text: '✖ Cancel', callback_data: `x:${id}` }]]
+    ? [...askRows, [{ text: '❌ Cancel', callback_data: `x:${id}` }]]
     : opts.clash
-      ? [...askRows, [{ text: '1️⃣', callback_data: `1:${id}` }, { text: '2️⃣', callback_data: `2:${id}` }, { text: '✖ Cancel', callback_data: `x:${id}` }]]
+      ? [...askRows, [{ text: '1️⃣', callback_data: `1:${id}` }, { text: '2️⃣', callback_data: `2:${id}` }, { text: '❌ Cancel', callback_data: `x:${id}` }]]
       : [...askRows, ...actionButtons(id)]
   const tail = !actions.length ? 'Tap an answer: nothing changes until you tap ✅ Apply.'
     : `Nothing changes until you tap ${opts.clash ? '1️⃣ or 2️⃣' : '✅ Apply'}${ask ? ' (the question can be answered first, or left out)' : ''}.`
@@ -89,17 +101,17 @@ function actionCardBody(id: string, actions: Action[], problems: string[], opts:
 }
 
 export const cardButtons = (id: string): Button[][] => [
-  [{ text: '✅ Save', callback_data: `s:${id}` }, { text: '📥 Inbox', callback_data: `i:${id}` }],
-  [{ text: '✏️ Edit', callback_data: `e:${id}` }, { text: '✖ Cancel', callback_data: `x:${id}` }],
+  [{ text: '✅ Save', callback_data: `s:${id}` }, { text: '✏️ Change', callback_data: `e:${id}` }, { text: '❌ Cancel', callback_data: `x:${id}` }],
+  [{ text: '📥 Inbox instead', callback_data: `i:${id}` }],
 ]
 
 export const actionButtons = (id: string): Button[][] => [
-  [{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '✏️ Change', callback_data: `e:${id}` }, { text: '✖ Cancel', callback_data: `x:${id}` }],
+  [{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '✏️ Change', callback_data: `e:${id}` }, { text: '❌ Cancel', callback_data: `x:${id}` }],
 ]
 
 /** Under the "what should I change?" message: keep the card as it is, or drop it. */
 export const editButtons = (id: string, kind: Pending['kind'] = 'capture'): Button[][] =>
-  [[kind === 'action' || kind === 'plan' ? { text: '✅ Apply as is', callback_data: `a:${id}` } : { text: '✅ Save as is', callback_data: `s:${id}` }, { text: '✖ Cancel', callback_data: `x:${id}` }]]
+  [[kind === 'action' || kind === 'plan' ? { text: '✅ Apply as is', callback_data: `a:${id}` } : { text: '✅ Save as is', callback_data: `s:${id}` }, { text: '❌ Cancel', callback_data: `x:${id}` }]]
 
 /** The card Nat is most likely talking about: the newest one still waiting (or being edited) from the last 30 minutes. */
 export async function openCard(sb: SupabaseClient): Promise<Pending | null> {
@@ -121,7 +133,7 @@ export const cardForAI = (c: Pending) =>
 
 /**
  * Show a list of checked changes as one card: "before → after", what it knocks on in the plan, then
- * ✅ Apply · ✏️ Change · ✖ Cancel. With a clash: the two options as 1️⃣ / 2️⃣ instead of Apply.
+ * ✅ Apply · ✏️ Change · ❌ Cancel. With a clash: the two options as 1️⃣ / 2️⃣ instead of Apply.
  */
 export async function actionCard(sb: SupabaseClient, chatId: number, text: string, actions: Action[], problems: string[],
   opts: { replaces?: Pending | null; ripple?: Ripple; clash?: Clash | null; head?: string; asks?: Ask[] } = {}): Promise<string> {
@@ -137,7 +149,8 @@ export async function actionCard(sb: SupabaseClient, chatId: number, text: strin
   await replaceOld(sb, chatId, opts.replaces ?? null)
   const { body, buttons, tail } = actionCardBody(id, actions, problems, opts)
   const msgId = await say(sb, chatId, `${opts.replaces ? '✏️ <b>Corrected</b>\n' : ''}${body}\n\n${tail}`, buttons, { pending_id: id, intent: 'instruction' })
-  if (msgId) await sb.from('telegram_pending').update({ payload: { ...payload, card_message_id: msgId } }).eq('id', id)
+  // which message holds the buttons (a background write: the next message waits for it, the reply doesn't)
+  if (msgId) await soon(() => sb.from('telegram_pending').update({ payload: { ...payload, card_message_id: msgId } }).eq('id', id), { inOrder: false })
   return id
 }
 
@@ -261,7 +274,7 @@ export async function newCard(sb: SupabaseClient, chatId: number, text: string,
   await proposalCard(sb, chatId, text, res.proposal, res.duplicates, { replaces: old })
 }
 
-/** Show a sorted proposal as a card (✅ Save · 📥 Inbox · ✏️ Edit · ✖ Cancel). `head`: a line above it (an email's sender).
+/** Show a sorted proposal as a card (✅ Save · ✏️ Change · ❌ Cancel · 📥 Inbox). `head`: a line above it (an email's sender).
  *  Returns the card's id. */
 export async function proposalCard(sb: SupabaseClient, chatId: number, text: string, proposal: Proposal, duplicates: Duplicate[],
   opts: { replaces?: Pending | null; head?: string } = {}): Promise<string> {
@@ -275,8 +288,8 @@ export async function proposalCard(sb: SupabaseClient, chatId: number, text: str
   await replaceOld(sb, chatId, old)   // only a card still waiting is replaced (a tap on it in the meantime wins)
   const head = old ? '✏️ <b>Corrected</b>\n' : ''
   const msgId = await say(sb, chatId, `${head}${body}\n\nNothing is saved until you tap ✅ Save.`, cardButtons(id), { pending_id: id })
-  // remember which message holds the buttons, so a correction or /cancel can remove them
-  if (msgId) await sb.from('telegram_pending').update({ payload: { ...payload, card_message_id: msgId } }).eq('id', id)
+  // remember which message holds the buttons, so a correction or /cancel can remove them (in the background)
+  if (msgId) await soon(() => sb.from('telegram_pending').update({ payload: { ...payload, card_message_id: msgId } }).eq('id', id), { inOrder: false })
   return id
 }
 
@@ -295,7 +308,7 @@ export async function cancelOpenCard(sb: SupabaseClient, chatId: number): Promis
 // ---------------------------------------------------------------------------
 
 type Tap = NonNullable<TgUpdate['callback_query']>
-const TAP_WORDS: Record<string, string> = { s: '✅ Save', i: '📥 Inbox', e: '✏️ Edit', x: '✖ Cancel', f: '💾 Save fact', a: '✅ Apply', u: '↩️ Undo', 1: 'option 1️⃣', 2: 'option 2️⃣', t: 'a training type', o: '🔁 Move a session', p: 'a new slot', g: 'an answer', c: 'keep / archive', q: 'an answer' }
+const TAP_WORDS: Record<string, string> = { s: '✅ Save', i: '📥 Inbox', e: '✏️ Change', x: '❌ Cancel', f: '💾 Save fact', a: '✅ Apply', u: '↩️ Undo', 1: 'option 1️⃣', 2: 'option 2️⃣', t: 'a training type', o: '🔁 Move a session', p: 'a new slot', g: 'an answer', c: 'keep / archive', q: 'an answer' }
 // Which cards each button works on, and the status a tap moves the card to (in one step, so a double tap
 // can't do it twice). A card being edited can still be saved/applied as it is, or cancelled.
 const TAP_RULES: Record<string, { kinds: Pending['kind'][]; from: Pending['status'][]; to: Pending['status'] }> = {
@@ -349,10 +362,10 @@ export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
   const { data: row } = await sb.from('telegram_pending').update({ status: rule.to })
     .eq('id', id).in('kind', rule.kinds).in('status', rule.from).select('*').maybeSingle()
   if (!row) { await answerTap(q.id, 'Already handled.'); if (messageId) await clearButtons(chatId, messageId); return }
-  await answerTap(q.id)
+  await soon(() => answerTap(q.id!), { inOrder: false })   // the button stops spinning while the tap is handled
   if (action === 'c') { await toggleCleanup(sb, chatId, row as never, arg, messageId); return }   // redrawn in place, buttons kept
   if (action === 'q') { await answerAsk(sb, chatId, row as Pending, arg, messageId); return }   // redrawn in place
-  if (messageId) await clearButtons(chatId, messageId)
+  if (messageId) await soon(() => clearButtons(chatId, messageId), { inOrder: false })   // the old buttons go while the tap is handled
   await remember(sb, 'nat', `(tapped ${action === 't' ? arg : TAP_WORDS[action]})`, { intent: 'tap', pending_id: id })
   const card = row as Pending
   const back = (status: Pending['status'] = 'open') => sb.from('telegram_pending').update({ status }).eq('id', id)
@@ -547,7 +560,7 @@ export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
     .catch((e) => ({ error: e instanceof Error ? e.message : 'Not saved.', message: undefined, task: undefined, logId: undefined }))
   if (res.error || !res.message) {
     await back()
-    const again: Button[][] = [[{ text: '📥 Inbox instead', callback_data: `i:${id}` }, { text: '✏️ Edit', callback_data: `e:${id}` }]]
+    const again: Button[][] = [[{ text: '📥 Inbox instead', callback_data: `i:${id}` }, { text: '✏️ Change', callback_data: `e:${id}` }]]
     await tell(`⚠️ ${esc((res.error ?? 'Not saved.').replace(' Your text is still in the box.', ''))}`, again)
     return
   }

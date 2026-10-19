@@ -2,10 +2,13 @@
 // - Memory: the last ~10 messages from the past 30 minutes, so "it" and "make it Thursday" make sense.
 // - Queue: each of Nat's messages is queued first and handled one at a time, in the order he sent them,
 //   so a quick follow-up ("actually Thursday") always sees the card the first message made.
+// - Speed (queue item 3): memory rows are written in the background (lib/telegram/speed.ts soon(), flushed before the
+//   next message is read); each handled message logs how long it took (after supabase/speed.sql; /speed shows them).
 import 'server-only'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { timeOf } from '../time'
-import { send, type Button } from './api'
+import { esc, send, type Button } from './api'
+import { soon, type Path } from './speed'
 
 export const MEMORY_TURNS = 10
 export const MEMORY_MINUTES = 30
@@ -30,19 +33,20 @@ export async function enqueue(sb: SupabaseClient, text: string, tgMessageId: num
   return data!.id as number
 }
 
-/** Record something that isn't a typed message (a button tap) or a reply, straight into the memory. */
+/** Record something that isn't a typed message (a button tap) or a reply in the memory. During a message or a tap this
+ *  is a background write (in order; the next message waits for it), so a reply never waits for its own memory. */
 export async function remember(sb: SupabaseClient, role: 'nat' | 'bot', text: string,
   extra: { intent?: string; pending_id?: string | null; refs?: Ref[]; tg_message_id?: number | null } = {}) {
-  const { error } = await sb.from('telegram_turns').insert({ role, text: text.slice(0, 4000), status: 'done', refs: [], ...extra })
   // Memory is a help, not a must: a reply that went out is never turned into an error by this.
-  return !error
+  await soon(() => sb.from('telegram_turns').insert({ role, text: text.slice(0, 4000), status: 'done', refs: [], ...extra }))
+  return true
 }
 
 /** Telegram's HTML -> plain words, for the memory. */
 export const plain = (html: string) =>
   html.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&').trim()
 
-/** Send a reply and remember it. Returns Telegram's message number (to remove a card's buttons later). */
+/** Send a reply and remember it (in the background). Returns Telegram's message number (to remove a card's buttons later). */
 export async function say(sb: SupabaseClient, chatId: number, html: string, buttons?: Button[][],
   extra: { intent?: string; pending_id?: string | null; refs?: Ref[] } = {}): Promise<number | null> {
   const sent = await send(chatId, html, buttons) as { message_id?: number } | null
@@ -60,11 +64,11 @@ export async function recentTurns(sb: SupabaseClient, beforeId: number): Promise
   return ((data ?? []) as TurnRow[]).reverse()
 }
 
-/** The memory as the AI reads it. */
-export function transcript(turns: TurnRow[]): string {
+/** The memory as the AI reads it (each turn cut to `max` characters: the quick router reads a shorter one). */
+export function transcript(turns: TurnRow[], max = 700): string {
   return turns.map((t) => {
     const who = t.role === 'nat' ? 'Nat' : 'You'
-    const text = t.text.length > 700 ? `${t.text.slice(0, 700)}…` : t.text
+    const text = t.text.length > max ? `${t.text.slice(0, max)}…` : t.text
     return `[${timeOf(t.created_at)}] ${who}: ${text.replace(/\n+/g, ' / ')}`
   }).join('\n')
 }
@@ -101,23 +105,68 @@ export async function releaseLock(sb: SupabaseClient) {
   await sb.from('telegram_state').update({ busy_until: null }).not('user_id', 'is', null)
 }
 
-/** The oldest message still waiting. A run that died mid-message (over 5 minutes) is closed first. */
-export async function nextQueued(sb: SupabaseClient): Promise<{ next: TurnRow | null; lost: TurnRow[] }> {
+/** The oldest message still waiting. A run that died mid-message (over 5 minutes) is closed first.
+ *  `current`: the message this run has just finished (read alongside its 'done' update, so never counted as lost). */
+export async function nextQueued(sb: SupabaseClient, current?: number): Promise<{ next: TurnRow | null; lost: TurnRow[] }> {
   const { data, error } = await sb.from('telegram_turns').select(COLS)
     .eq('role', 'nat').neq('status', 'done').order('tg_message_id', { ascending: true }).order('id', { ascending: true }).limit(20)
   if (error) fail('read the queue', error)
-  const rows = (data ?? []) as TurnRow[]
+  const rows = ((data ?? []) as TurnRow[]).filter((r) => r.id !== current)
   const lost = rows.filter((r) => r.status === 'working' && Date.now() - Date.parse(r.created_at) > STALE_WORKING_MS)
   for (const r of lost) await setStatus(sb, r.id, 'done', 'failed')
   return { next: rows.find((r) => r.status === 'queued') ?? null, lost }
 }
 
-export async function setStatus(sb: SupabaseClient, id: number, status: TurnRow['status'], intent?: string) {
-  const { error } = await sb.from('telegram_turns').update({ status, ...(intent ? { intent } : {}) }).eq('id', id)
+export type TurnTiming = { ms_total: number; ms_first: number | null; path: Path | null }
+
+// Before supabase/speed.sql runs, telegram_turns has no timing columns: the status is saved without them (once known).
+let timingColumns: boolean | null = null
+const missingColumn = (e: { code?: string; message: string }) =>
+  e.code === 'PGRST204' || e.code === '42703' || /could not find the .* column|column .* does not exist/i.test(e.message)
+
+/** A message's place in the queue; with `timing`, how long it took and which path answered (supabase/speed.sql). */
+export async function setStatus(sb: SupabaseClient, id: number, status: TurnRow['status'], intent?: string, timing?: TurnTiming) {
+  const row = { status, ...(intent ? { intent } : {}) }
+  if (timing && timingColumns !== false) {
+    const { error } = await sb.from('telegram_turns').update({ ...row, ...timing }).eq('id', id)
+    if (!error) { timingColumns = true; return }
+    if (!missingColumn(error)) fail('update the queue', error)
+    timingColumns = false
+  }
+  const { error } = await sb.from('telegram_turns').update(row).eq('id', id)
   if (error) fail('update the queue', error)
 }
 
 export async function isDone(sb: SupabaseClient, id: number): Promise<boolean> {
   const { data } = await sb.from('telegram_turns').select('status').eq('id', id).maybeSingle()
   return !data || data.status === 'done'
+}
+
+// ---------------------------------------------------------------------------
+// /speed: the real reply times of his last 20 messages (logged by lib/telegram/bot.ts after supabase/speed.sql)
+// ---------------------------------------------------------------------------
+
+const PATH_WORDS: Record<string, string> = { list: 'list', fast: 'fast', quick: 'quick AI', brain: 'full AI', simple: 'simple mode', command: 'command' }
+const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`
+const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor((s.length - 1) / 2)] : 0 }
+
+export async function speedText(sb: SupabaseClient): Promise<string> {
+  const { data, error } = await sb.from('telegram_turns').select('text,created_at,path,ms_total,ms_first')
+    .eq('role', 'nat').not('ms_total', 'is', null).order('id', { ascending: false }).limit(20)
+  if (error) {
+    return missingColumn(error)
+      ? '⏱ Reply times aren’t logged yet: run <code>supabase/speed.sql</code> in Supabase (SQL Editor → paste → Run), then send a few messages.'
+      : `⚠️ Couldn’t read the reply times: ${esc(error.message)}`
+  }
+  const rows = (data ?? []) as { text: string; created_at: string; path: string | null; ms_total: number; ms_first: number | null }[]
+  if (!rows.length) return '⏱ No reply times yet. Send me a message, then /speed again.'
+  const lines = [`⏱ <b>Reply times</b> (your last ${rows.length} message${rows.length === 1 ? '' : 's'}, newest first)`]
+  for (const r of rows) {
+    const words = r.text.length > 28 ? `${r.text.slice(0, 27)}…` : r.text
+    lines.push(`• ${timeOf(r.created_at)} “${esc(words)}”: ${r.ms_first != null ? `reply ${secs(r.ms_first)}` : 'no reply'} · done ${secs(r.ms_total)}${r.path ? ` · ${PATH_WORDS[r.path] ?? esc(r.path)}` : ''}`)
+  }
+  const by = new Map<string, number[]>()
+  for (const r of rows) if (r.ms_first != null) by.set(r.path ?? '?', [...(by.get(r.path ?? '?') ?? []), r.ms_first])
+  if (by.size) lines.push('', `<i>Typical first reply: ${[...by].map(([p, xs]) => `${PATH_WORDS[p] ?? esc(p)} ${secs(median(xs))}`).join(' · ')}.</i>`)
+  return lines.join('\n')
 }

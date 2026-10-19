@@ -1,6 +1,7 @@
 // Server-only: calls the Telegram Bot API. The bot token stays in this file's request URL;
 // error messages are cleaned so the token can never reach a reply or a response.
 import 'server-only'
+import { markReply, soon } from './speed'
 
 // Tests can point the bot at a local fake Telegram (localhost only); real deployments never set this.
 function base(): string {
@@ -79,14 +80,20 @@ export function safeHtml(html: string, max = MAX_TEXT): string {
 export const plainText = (html: string) =>
   html.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&').slice(0, MAX_TEXT)
 
+let lastShown = 0   // when a message was last sent or changed (Telegram stops showing "typing…" then)
+
 /** Send or edit as HTML; if Telegram still can't read the HTML, the same words go as plain text. */
 async function withHtml<T>(method: string, body: Record<string, unknown>, html: string): Promise<T> {
+  let out: T
   try {
-    return await tg<T>(method, { ...body, text: safeHtml(html), parse_mode: 'HTML' })
+    out = await tg<T>(method, { ...body, text: safeHtml(html), parse_mode: 'HTML' })
   } catch (e) {
     if (!(e instanceof TelegramError) || !/can.t parse entities/i.test(e.message)) throw e
-    return tg<T>(method, { ...body, text: plainText(html) })
+    out = await tg<T>(method, { ...body, text: plainText(html) })
   }
+  lastShown = Date.now()
+  markReply()   // the turn's first reply (lib/telegram/speed.ts)
+  return out
 }
 
 /** Send an HTML message (always valid HTML, cut to Telegram's 4096-character limit). */
@@ -97,6 +104,22 @@ export const send = (chatId: number, html: string, buttons?: Button[][]) =>
   }, html)
 
 export const typing = (chatId: number) => tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => null)
+
+/**
+ * "typing…" straight away, and again every 4 s until stop() (Telegram shows it for about 5 s, or until the next
+ * message). A refresh is skipped right after a message went out, so it never reappears under a finished reply.
+ */
+export function keepTyping(chatId: number): () => void {
+  const show = () => void soon(() => typing(chatId), { inOrder: false })   // tracked, so the run waits for it before it ends
+  show()
+  let since = Date.now()
+  const timer = setInterval(() => {
+    if (lastShown < since) show()
+    since = Date.now()
+  }, 4000)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
 
 /** Remove a message's buttons once one has been tapped. */
 export const clearButtons = (chatId: number, messageId: number) =>

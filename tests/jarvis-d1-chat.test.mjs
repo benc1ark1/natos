@@ -55,7 +55,7 @@ test('"plan tomorrow": Opus picks, code places; the card is a timeline; nothing 
   await tap('Undo')
   assert.deepEqual((await planned()).map((b) => b.status), ['cancelled', 'cancelled', 'cancelled'], 'undone, never deleted')
   const usage = await q(`select feature, model from ai_usage order by id`)
-  assert.deepEqual(usage.map((u) => `${u.feature}:${u.model}`), ['chat:claude-sonnet-5-5', 'plan:claude-opus-5-5'])
+  assert.deepEqual(usage.map((u) => `${u.feature}:${u.model}`).sort(), ['chat:claude-sonnet-5-5', 'plan:claude-opus-5-5'])
   chat.noSurprises()
 })
 

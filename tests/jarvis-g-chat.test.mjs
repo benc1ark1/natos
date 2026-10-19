@@ -47,10 +47,10 @@ test('fix 2: what the bot can’t do is said plainly and kept in App ideas; recu
   // can't do: "I can't do that yet", saved to App ideas, /ideas lists it, Undo marks it dropped (never deleted)
   chat.ai.script(CHAT, brain({ intent: 'app_idea', idea: 'Rename a calendar event from Telegram' }))
   await nat('rename CS tutor to Computing tutor')
-  assert.match(last().text, /^I can’t do that yet — it needs adding in Claude Code\.\n💡 Saved to your App ideas: “Rename a calendar event from Telegram”/)
+  assert.match(last().text, /^I can’t do that yet — it needs adding in Claude Code\. 💡 Saved to your App ideas \(\/ideas\)\.$/)
   assert.deepEqual(await q(`select request, source_text, status from app_ideas`), [{ request: 'Rename a calendar event from Telegram', source_text: 'rename CS tutor to Computing tutor', status: 'open' }])
   await nat('/ideas')
-  assert.match(last().text, /App ideas<\/b> \(1\)[\s\S]*1\. Rename a calendar event from Telegram/)
+  assert.match(last().text, /App ideas<\/b> \(1\)[\s\S]*<pre>[\s\S]*1\. "rename CS tutor to Computing tutor"[\s\S]*Needs: Rename a calendar event from Telegram/)
   await tap('Undo')
   assert.deepEqual(await q(`select status from app_ideas`), [{ status: 'dropped' }])
 

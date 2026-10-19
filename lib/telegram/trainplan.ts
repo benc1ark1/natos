@@ -142,7 +142,7 @@ export function trainText(p: PlanPayload, today: string): string {
 }
 
 export const trainButtons = (id: string, p: PlanPayload): Button[][] => {
-  const rows: Button[][] = [[{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '✖ Cancel', callback_data: `x:${id}` }]]
+  const rows: Button[][] = [[{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '❌ Cancel', callback_data: `x:${id}` }]]
   const per = p.blocks.map((b, i): Button => ({ text: `🔁 ${dowShort(b.date!)} ${b.title}`.slice(0, 40), callback_data: `o:${id}:s${i}` }))
   for (let i = 0; i < per.length; i += 2) rows.push(per.slice(i, i + 2))
   return rows

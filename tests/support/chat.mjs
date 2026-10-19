@@ -9,6 +9,9 @@ import { fakeTelegram, fakeAI } from './fakes.mjs'
 export const OWNER_TG = 7001
 export const CHAT = 'claude-sonnet-5-5'
 export const SORT = 'claude-haiku-4-5'
+/** The quick router (lib/telegram/brain.ts route()): reads simple messages before the brain. Unscripted, it answers like an
+ *  unavailable model (529), so the bot hands the message to the brain exactly as before: older conversations stay valid. */
+export const ROUTE = 'claude-haiku-5-5'
 
 export function useChat() {
   const { env, why } = testEnv()
@@ -23,6 +26,7 @@ export function useChat() {
     c.users = await ensureUsers(env)
     c.tg = await fakeTelegram()
     c.ai = await fakeAI()
+    c.ai.fallback(ROUTE, () => ({ status: 529, json: { type: 'error', error: { type: 'overloaded_error', message: 'not scripted: the brain reads it' } } }))
     Object.assign(process.env, {
       NEXT_PUBLIC_SUPABASE_URL: env.TEST_SUPABASE_URL,
       NEXT_PUBLIC_SUPABASE_ANON_KEY: env.TEST_SUPABASE_ANON_KEY,

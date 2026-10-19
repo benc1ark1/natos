@@ -48,7 +48,7 @@ test('several sessions in one casual message: one card with every session, place
   // the unclear part is asked on the same card, one question at a time, with quick-tap answers
   assert.match(card.text, /❓ <b>How long is the Uber home from Christchurch Finchley College \(Mon\)\?<\/b> <i>\(1 of 2\)<\/i>/)
   assert.deepEqual(card.reply_markup.inline_keyboard.map((r) => r.map((b) => b.text)),
-    [['10–15 min', '15–20 min', '20–30 min'], ['✋ Skip this part'], ['✅ Apply', '✏️ Change', '✖ Cancel']])
+    [['10–15 min', '15–20 min', '20–30 min'], ['✋ Skip this part'], ['✅ Apply', '✏️ Change', '❌ Cancel']])
   assert.equal((await q(`select count(*)::int n from events`))[0].n, 0, 'nothing saved before ✅')
 
   // answer both: each answer joins the same card (redrawn in place, no new message)
@@ -63,7 +63,7 @@ test('several sessions in one casual message: one card with every session, place
   assert.match(now.text, /🔧 <b>4 changes<\/b>/)
   assert.match(now.text, /🚕 <b>24 Tiverton Road → Home<\/b>: 10–15 min by Uber/)
   assert.doesNotMatch(now.text, /❓/)
-  assert.deepEqual(now.reply_markup.inline_keyboard.map((r) => r.map((b) => b.text)), [['✅ Apply', '✏️ Change', '✖ Cancel']])
+  assert.deepEqual(now.reply_markup.inline_keyboard.map((r) => r.map((b) => b.text)), [['✅ Apply', '✏️ Change', '❌ Cancel']])
 
   // ✅ Apply: every part saved
   await tapOn('Apply')
