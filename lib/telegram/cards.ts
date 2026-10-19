@@ -4,6 +4,7 @@
 // a corrected card replaces the old one (status 'replaced'). Rows are never deleted.
 // Buttons are the same everywhere: ✅ save / apply · ✏️ change · ❌ cancel (the callback data never changes, so a tap on
 // an older message still works).
+import { isChatOnly } from '../chat-only'
 import 'server-only'
 import { sourceLabel } from '../lists'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -259,6 +260,11 @@ export async function describe(sb: SupabaseClient, p: Proposal, dups: Duplicate[
 export async function newCard(sb: SupabaseClient, chatId: number, text: string,
   opts: { kind?: CaptureKind | null; replaces?: Pending | null } = {}): Promise<void> {
   const old = opts.replaces ?? null
+  // chat ("hello", "ok thanks", "that okay maybe") is never an item: no card, nothing saved
+  if (isChatOnly(text)) {
+    await say(sb, chatId, old ? 'That’s just chat, so the card stays as it is.' : 'That’s just chat, so nothing was saved.', undefined, { intent: 'chat', ...(old ? { pending_id: old.id } : {}) })
+    return
+  }
   const res = await sortCapture(sb, text, { kind: opts.kind ?? undefined })
   if (!res.ok) {
     if (old) {

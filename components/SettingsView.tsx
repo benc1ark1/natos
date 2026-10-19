@@ -15,6 +15,7 @@ import { TIMES_15 } from '@/lib/time'
 import Select from './controls/Select'
 import Toggle from './controls/Toggle'
 import GoogleSettings from './GoogleSettings'
+import HealthBanner from './HealthBanner'
 import WhoopSettings from './WhoopSettings'
 import MailSettings from './MailSettings'
 import LoadCosts from './LoadCosts'
@@ -104,6 +105,7 @@ export default function SettingsView() {
         <p className="usub" style={{ margin: '0 0 12px' }}>The “Where it came from” choices on tasks (a tutor, school…). Archived ones stay on old tasks.</p>
         <SourcesEditor sources={taskSources(data.planning)} onSave={(list, words) => save('sources', list, words)} />
       </section>
+      <HealthBanner />
       <section className="card setcard" aria-labelledby="set-google">
         <div className="ch"><span className="lbl" id="set-google">Google Calendar</span></div>
         <GoogleSettings toast={toast.show} />

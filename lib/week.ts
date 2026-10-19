@@ -7,7 +7,8 @@ import { schoolDays } from './school'
 import type { Block, Energy } from './plan'
 import type { WeekCount } from './targets'
 import { costOf, intensityOf, loadOfIntensity, type CostRow, type LoadPlaced, type LoadSession, type LoadSettings, type Pin } from './load'
-import { DEFAULT_MORE, daysOf, type MoreSettings } from './settings'
+import { DEFAULT_MORE, daysOf, setting, type MoreSettings } from './settings'
+import { isHoliday } from './today/holidays'
 import { DEFAULT_TYPES, ruleProblems, type DayRoom, type Need, type Placed, type Rule, type Session, type TypeDef } from './training'
 import { typeOf } from './training-data'
 import { withTravel, type TravelWorld } from './travel'
@@ -84,6 +85,8 @@ export function optWorldOf(w: WeekWorld, keep: Planned[] = w.planned.filter((b) 
   return {
     from: w.from, to: w.to, today: w.today, rooms, fixed: fixedLoad(w), rules: w.rules, settings: more,
     costs: w.costs ?? [], types, heavyUntil: w.settings.heavyUntil, trainingFrom: w.trainingFrom ?? more.trainingFrom,
+    // on his holidays gym can be from 12:00 (holidayTrainingFrom), never earlier; his usual time is still preferred
+    trainingEarliestOn: (d: string) => (isHoliday(w.planning, d) ? setting<string>(w.planning, 'holidayTrainingFrom') : null),
     tired, whoop: w.whoop ?? null, pins: w.pins,
     mental: new Map((w.mental ?? []).map((m) => [m.date, { total: m.total, high: m.level === 'high', testEve: m.testEve,
       what: m.testEve ? (m.items.find((i) => / tomorrow$/.test(i.what))?.what.replace(/ tomorrow$/, '') ?? 'a test') : m.items.map((i) => i.what).join(', ') }])),

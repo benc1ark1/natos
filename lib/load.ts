@@ -117,6 +117,7 @@ export type LoadWorld = {
   settings: LoadSettings
   costs: CostRow[]; types: TypeDef[]
   heavyUntil: string; trainingFrom: string
+  trainingEarliestOn?: (date: string) => string | null   // a day's earliest gym time (holidays: holidayTrainingFrom, 12:00)
   tired?: Map<string, string>           // a day he's tired (or low Whoop recovery): only light work
   whoop?: { recovery: number | null; strain: number | null } | null   // today's recovery, yesterday's strain
   pins?: Map<string, Pin>
@@ -262,9 +263,14 @@ const hm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${Stri
 function slotFor(room: DayRoom | undefined, minutes: number, heavy: boolean, used: [number, number][], w: LoadWorld, start?: string | null, where?: Where | null): { start: string; end: string } | null {
   if (!room) return null
   const from = minutesOf(w.trainingFrom)
+  // a day's earliest gym time (holidays: holidayTrainingFrom, 12:00): never before it, unless it's his own time for
+  // that session ("upper Saturday 09:30")
+  const earliest = start ? null : w.trainingEarliestOn?.(room.date)
+  const floor = earliest ? minutesOf(earliest) : 0
   const before = where?.before ?? 0, after = where?.after ?? 0
   const slots = room.slots.flatMap((s) => {
-    let parts: [number, number][] = [[minutesOf(s.start), minutesOf(s.end)]]
+    let parts: [number, number][] = [[Math.max(floor, minutesOf(s.start)), minutesOf(s.end)]]
+    if (parts[0][1] <= parts[0][0]) return []
     for (const [a, b] of used) parts = parts.flatMap(([x, y]) => (b <= x || a >= y ? [[x, y] as [number, number]] : [[x, Math.min(a, y)], [Math.max(b, x), y]] as [number, number][]).filter(([p, q]) => q > p))
     return parts
   }).sort((a, b) => Number(a[0] < from && a[1] - minutes < from) - Number(b[0] < from && b[1] - minutes < from) || a[0] - b[0])

@@ -18,6 +18,8 @@ import { refreshPinned } from './pinned'
 import { COMMANDS, appUrl } from './bot'
 import { runPluginTicks } from './plugins'
 import { claim, release } from './sent'
+import { isChatOnly } from '../chat-only'
+import { missingEnvText } from '../health'
 import { askNextType } from './asktype'
 import { syncGoogle } from '../google/sync'
 import { syncWhoop } from '../whoop/sync'
@@ -114,6 +116,12 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
     }
   }
   if (google?.reconnect) await once(`google-reconnect:${today}`, async () => `⚠️ Google Calendar stopped accepting the sign-in, so syncing has paused. Open Settings → Google Calendar → Connect.`)
+  // any other sync problem is said once a day too (it used to fail quietly: Settings only showed "last sync 2 h ago")
+  else if (google && !google.ok) await once(`google-error:${today}`, async () => `⚠️ The Google Calendar sync failed: ${esc(google.error ?? 'unknown problem')}. Settings → Google Calendar → Sync now tries again.`)
+  // a secret setting missing in Vercel (names only): what stopped, and where to add it
+  // (on Vercel only: a test run or his own PC doesn't have, or need, all of them)
+  const health = process.env.VERCEL ? missingEnvText() : ''
+  if (health) await once(`health:${today}`, async () => esc(health))
 
   // Whoop (if connected): every 30 minutes. Workouts that count toward a target get one message.
   const whoop = await syncWhoop(sb, { now: nowDate })
@@ -152,6 +160,19 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
   // Build O: the Sunday "Your week" card, the morning queue, gap questions, the 21:00 wrap-up and the cards that
   // keep the plan right as things change (lib/telegram/schedule.ts). Quiet hours are kept there.
   try { sent.push(...await proactive(sb, chatId, nowDate, today, planning)) } catch {}
+
+  // once: chat that was saved as an item before the app learned not to ("hello", "That okay maybe"): archived, never
+  // deleted, and he's told which (he asked for this on 19 Oct 2026)
+  try {
+    if (await claim(sb, 'cleanup:chat-items')) {
+      const { data: inbox } = await sb.from('tasks').select('id,title').eq('status', 'inbox').is('archived_at', null).limit(500)
+      const chat = ((inbox ?? []) as { id: string; title: string }[]).filter((t) => isChatOnly(t.title))
+      if (chat.length) {
+        const { data: done } = await sb.from('tasks').update({ archived_at: new Date().toISOString(), archive_reason: 'dropped' }).in('id', chat.map((t) => t.id)).is('archived_at', null).select('title')
+        if (done?.length) { await send(chatId, `🧹 Archived ${done.length} chat message${done.length > 1 ? 's' : ''} that had been saved as items: ${done.map((t) => `“${esc(t.title)}”`).join(', ')}. <i>(Kept in Archive, not deleted.)</i>`); sent.push('cleanup') }
+      }
+    }
+  } catch { /* only a tidy-up */ }
 
   // plug-ins' own messages (lib/telegram/plugins): the morning Today, the weekly check, a Classroom test question…
   await runPluginTicks({ sb, chatId, now: nowDate, today, time: now, planning, once: async (key, build) => { await once(key, async () => { const out = await build(); if (out) sent.push(key); return out }) } })

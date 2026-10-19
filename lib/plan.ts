@@ -18,7 +18,8 @@ export type BlockKind = 'focus' | 'light' | 'training' | 'rest'
 export type Energy = 'normal' | 'tired' | 'ill'
 
 /** One thing to place, in priority order. */
-export type PlanItem = { title: string; minutes: number; kind: BlockKind; ref?: { kind: string; id: string } | null; why?: string }
+export type PlanItem = { title: string; minutes: number; kind: BlockKind; ref?: { kind: string; id: string } | null; why?: string
+  after?: string }   // goes after the block with this ref id or title, if it's placed (an ACT test's review after the test)
 export type Block = { start: string; end: string; title: string; kind: BlockKind; ref?: { kind: string; id: string } | null; why?: string; date?: string
   intensity?: string; wanted?: string; key?: string    // training placed by load (lib/load.ts): light / moderate / heavy
   place?: string | null; placeKey?: string | null; leave?: string | null; from?: string | null; back?: number }   // where, and when to leave (lib/optimiser.ts)
@@ -67,6 +68,18 @@ export function placeItems(items: PlanItem[], slots: Slot[], s: PlanningSettings
       if (!r) { unplaced.push({ title: it.title, minutes, reason: 'no free time left for it' }); continue }
       blocks.push({ start: toHHMM(r.to - minutes), end: toHHMM(r.to), title: it.title, kind: it.kind, ref: it.ref ?? null, why: it.why })
       r.to -= minutes + s.bufferMin
+      continue
+    }
+    // an item that goes after another (a test's review): only gaps from that block's end
+    const prior = it.after ? blocks.find((b) => b.ref?.id === it.after || b.title === it.after) : null
+    const minFrom = prior ? minutesOf(prior.end) + s.bufferMin : 0
+    if (prior) {
+      const p = room.find((x) => end(x) - Math.max(x.from, minFrom) >= minutes)
+      if (!p) { unplaced.push({ title: it.title, minutes, reason: `no free time after ${prior.title}` }); continue }
+      const at = Math.max(p.from, minFrom)
+      blocks.push({ start: toHHMM(at), end: toHHMM(at + minutes), title: it.title, kind: it.kind, ref: it.ref ?? null, why: it.why })
+      if (it.kind === 'focus') focusMinutes += minutes
+      p.from = at + minutes + s.bufferMin
       continue
     }
     const r = room.find((x) => end(x) - x.from >= minutes)

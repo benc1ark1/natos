@@ -93,7 +93,9 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   // the last message of this drain read his whole context: still good unless a card was saved or undone since
   const reuse = memo && memo.today === today && Date.now() - memo.at < MEMO_MS ? memo : null
 
-  const [history, card, money, stale] = await Promise.all([
+  // (`card` becomes null when his message turns out to be about something else: see "his own message" below)
+  // eslint-disable-next-line prefer-const
+  let [history, card, money, stale] = await Promise.all([
     recentTurns(sb, turn.id), openCard(sb), budget(sb).catch(() => null), reuse ? changedSince(sb, reuse.at) : false,
   ])
   // His whole context (snapshot, the day, the optimiser's week): read once no instant answer can do (alongside the
@@ -177,27 +179,35 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   const [ctx, data, weekPlan] = await Promise.all([parts.ctx, parts.data, parts.week])
   // a change is likely: its card's knock-on needs the week, so read it while the AI thinks
   if (looksLikeChange(message) || card?.kind === 'action') void worldOf(sb, data)
-  const res = await think(
+  const ask = (withCard: typeof card) => think(
     {
-      now: ctx.snapshot.split('\n', 1)[0], transcript: transcript(history), card: card ? cardForAI(card) : null,
-      cardEditing: card?.status === 'editing', message, freeTime: freeTimeForAI(data), today, forceQuestion: opts.forceQuestion,
+      now: ctx.snapshot.split('\n', 1)[0], transcript: transcript(history), card: withCard ? cardForAI(withCard) : null,
+      cardEditing: withCard?.status === 'editing', message, freeTime: freeTimeForAI(data), today, forceQuestion: opts.forceQuestion,
       guides: (() => { const g = relevantGuides(ctx.guides ?? [], message); return g.length ? guidesForAI(g) : undefined })(),
       weekPlan,
     },
     ctx,
     (model, usage) => recordUsage(sb, 'chat', model, usage),
   )
+  let res = await ask(card)
   if (!res.ok) {
     await say(sb, chatId, `⚠️ ${esc(res.error)}`)
     return simpleMode(sb, chatId, message, card, 'The AI didn’t answer')
   }
+  // His own message, not a change to the waiting card: a "correction" that has nothing to do with the card ("maths
+  // test on Thursday" while "Chemistry notes" waits), or a report that something is done ("Sam's CS homework is done").
+  // It is read again as if no card were waiting, so it's handled as itself and the card stays as it was. After ✏️
+  // Change his next message is the card's new version, as before; short edits ("30 min", "make it Thursday") too.
+  const unrelated = (about: string) => message.trim().split(/\s+/).length >= 3 && !sharesWords(about, `${res.ok ? res.decision.itemText ?? '' : ''} ${message}`)
+  const ownMessage = card && card.status !== 'editing' && !looksLikePartialEdit(message) && (
+    (card.kind === 'capture' && res.decision.intent === 'correction' && (looksDone(message) || unrelated(card.payload.proposal?.title ?? card.text)))
+    || (card.kind === 'action' && ['correction', 'instruction'].includes(res.decision.intent) && unrelated(card.text)))
+  if (ownMessage) {
+    const again = await ask(null)
+    if (again.ok) { res = again; card = null }
+  }
 
   const d = res.decision
-  // Two things sent quickly while a card waits: a "correction" that has nothing to do with the waiting card is a new
-  // item of its own, so the card isn't replaced (and his first message lost). After ✏️ Change his next message is the
-  // card's new version, as before.
-  if (d.intent === 'correction' && card?.kind === 'capture' && card.status !== 'editing'
-    && message.trim().split(/\s+/).length >= 3 && !looksLikePartialEdit(message) && !sharesWords(card.payload.proposal?.title ?? card.text, `${d.itemText ?? ''} ${message}`)) d.intent = 'new'
   // A change to a day plan that isn't applied yet: plan that day again with his words. (Not the small add-only cards:
   // "move it to tomorrow", "fit X into your plan", a knock-on: his next instruction is about something else.)
   const replannable = card?.kind === 'plan' && !(card.payload as { add?: boolean }).add
@@ -328,6 +338,10 @@ async function answer(sb: SupabaseClient, chatId: number, question: string, a: A
 
 const STOP = new Set(['the', 'and', 'for', 'due', 'with', 'this', 'that', 'next', 'make', 'its', 'it’s', 'from', 'about', 'add', 'need', 'have', 'today', 'tomorrow', 'week'])
 const wordsOf = (s: string) => new Set(s.toLowerCase().replace(/[’']/g, '').split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w)))
+/** A report that something is finished ("Sam's CS homework is done", "finished the physics sheet", "did my reading"). */
+export const looksDone = (message: string) =>
+  /\b(is|are|'s|’s|was|were|all|now)\s+(done|finished|complete|completed|handed in|submitted|sent)\b|^(done|finished|completed|did|handed in|submitted)\b/i.test(message.trim())
+
 /** Do two texts share a real word ("Chemistry notes" and "Chemistry notes due Friday, 30 min")? */
 export function sharesWords(a: string, b: string): boolean {
   const x = wordsOf(a)

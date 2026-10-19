@@ -196,14 +196,18 @@ async function runWeek(w, o) {
       const earlier = study.filter((x) => x.at && fresh(x) && x.at < it.at && x.minutes >= it.minutes && !hwDue.some((y) => y.id === x.taskId))
       check(!earlier.length, `${DAY[i]}: homework “${h.title}” at ${it.at} comes first, not after ${earlier.map((x) => `${x.at} ${x.title}`)}`)
     }
-    // the planner's ACT pick for the day: one countdown session (timed English daily, the mock on Wednesday and its
-    // review on Thursday), tier 2 in its last 21 days; on Today unless homework and other tests fill it
+    // the planner's ACT for the day, tier 2 in its last 21 days; on Today unless homework and other tests fill it.
+    // Holidays (19 Oct 2026): 4 h as two blocks: Tue + Thu the full timed test then its review, other days every
+    // section timed. School weeks: one session (timed English daily, the mock Tuesday and its review Wednesday).
     const actAll = (await actPicksOn(d, holiday ? 'half_term' : 'school')).filter((p) => p.key !== 'act:flashcards:daily')
-    check(actAll.length === 1, `${DAY[i]}: one ACT countdown session (${actAll.map((p) => p.key)})`)
+    check(actAll.length === (holiday ? 2 : 1), `${DAY[i]}: the ACT countdown's ${holiday ? 'two blocks' : 'one session'} (${actAll.map((p) => p.key)})`)
     const ap = actAll[0]
     const left = T().daysBetween(d, o.retake)
     check(ap.tier === (left <= 21 ? 2 : 7), `${DAY[i]}: ACT ${left} days out is tier ${left <= 21 ? 2 : 7}, got ${ap.tier}`)
-    check(i === 2 ? ap.key === 'act:full:mock' : i === 3 ? /mock review/.test(ap.title) : /^act:english:timed/.test(ap.key), `${DAY[i]}: the countdown shape (${ap.key}: ${ap.title})`)
+    const shape = holiday
+      ? (i === 1 || i === 3 ? actAll.map((p) => p.key).join() === 'act:full:mock,act:review:mock' : ap.key.startsWith('act:english:timed'))
+      : (i === 1 ? ap.key === 'act:full:mock' : i === 2 ? /mock review/.test(ap.title) : /^act:english:timed/.test(ap.key))
+    check(shape, `${DAY[i]}: the countdown shape (${actAll.map((p) => `${p.key}: ${p.title}`).join(' · ')})`)
     const actIt = items.find((x) => x.key.startsWith('act:') && x.key !== 'act:flashcards:daily')
     if (left <= 21 && !actIt) for (const it of study) check(tierOf(it.key) <= 2, `${DAY[i]}: the ACT countdown (tier 2) is left off for “${it.title}” (${it.key})`)
     // ---- events respected: nothing on Today inside a busy event (school, football, the game, dinner, a day out)

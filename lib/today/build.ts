@@ -183,7 +183,7 @@ export function buildToday(input: TodayInput): TodayPlan {
   const hidden: Pick[] = []
   const opts = { budget: input.budget, energy: input.energy }
   const place = (p: Pick, minutes: number) => {
-    const it: PlanItem = { title: p.key, minutes, kind: heavyOf(p) ? 'focus' : 'light', ref: { kind: 'pick', id: p.key } }
+    const it: PlanItem = { title: p.key, minutes, kind: heavyOf(p) ? 'focus' : 'light', ref: { kind: 'pick', id: p.key }, ...(p.after ? { after: p.after } : {}) }
     const r = placeItems([...chosen, it], slots, s, opts)
     const b = r.blocks.find((x) => x.ref?.id === p.key)
     return b ? { it, b } : null
