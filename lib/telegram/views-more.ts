@@ -26,6 +26,12 @@ export async function renderAny(sb: SupabaseClient, d: ViewData, req: ViewReques
   if (!ASYNC_VIEWS.includes(req.view)) return render(d, req)
   if (req.view === 'gaps') return { html: await gapsText(sb, d), refs: [] }
   if (req.view === 'savings') return savingsText(sb, d)
+  if (req.view === 'maths') {
+    // item 1: the study tracker's maths view (as /maths); the old one until supabase/tracker.sql has run
+    const [{ loadTracker }, { mathsView }] = await Promise.all([import('../tracker/bot-data'), import('../tracker/bot-views')])
+    const t = await loadTracker(sb, d.today)
+    if (!t.sqlMissing) return { html: mathsView(t), refs: [] }
+  }
   if (req.view === 'maths' || req.view === 'mathsnext') {
     const w = await mathsWorld(sb, d)
     return { html: req.view === 'maths' ? trackerText(w, esc) : nextText(w, esc), refs: [] }

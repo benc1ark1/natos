@@ -32,6 +32,7 @@ import { recommendations } from './roi'
 import { schoolDays, withSchool, type SchoolWindow } from '../school'
 import { courses as mathsCourses, weekBlocks } from '../maths'
 import { mathsWorld } from './views-more'
+import { weekRulesLine } from '../tracker/bot-data'
 
 export type YourWeekDay = {
   date: string; mental: 'low' | 'med' | 'high'; mentalTotal: number; physical: 'rest' | 'low' | 'med' | 'high'; physicalTotal: number
@@ -45,6 +46,7 @@ export type YourWeek = {
   training: TrainingInfo                              // for 🔁 (moving one session re-fits the rest)
   studyItems: { date: string; items: PlanItem[] }[]   // what the planner picked, kept so a 🔁 doesn't ask the AI again
   guesses: string[]                                   // what's still a guess (answers to the gap questions replace them)
+  rules?: string | null                               // item 1: "📌 Rules this week: …" (the study tracker's temporary rules)
   upperTarget?: { id: string; count: number } | null  // this week's upper count, if it differs from his target
 }
 
@@ -148,6 +150,7 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
   }
   const yourWeek: YourWeek = {
     review: opts.review ?? [], recs: opts.recs ?? [], days: ydays, training: info, studyItems, guesses,
+    rules: await weekRulesLine(sb, w.from, w.to).catch(() => null),
     upperTarget: upperTarget && t != null && t !== upperTarget.target_count ? { id: upperTarget.id, count: t } : null,
   }
   return { payload: { date: w.from, week: { from: w.from, to: w.to }, energy: 'normal', energyGiven: false, blocks, unplaced, tbc: plan.tbc, note, pushBack, yourWeek } as PlanPayload }
@@ -206,6 +209,7 @@ export function yourWeekText(p: PlanPayload, today: string): string {
   const t = y.training
   const lines = [`🗓 <b>Your week</b> · ${day(p.week!.from)} – ${day(p.week!.to)}`]
   lines.push(...y.review)
+  if (y.rules) lines.push(y.rules)
   for (const r of y.recs.slice(0, 2)) lines.push(`💡 ${esc(r)}`)
   const first = y.days[0]
   if (first) lines.push(`<i>☀️ Wake ${first.wake} + morning routine · 🌙 night routine from ${first.nightStart}, bed ${first.bed}${y.guesses.includes('wake-up and bedtime') ? ' (guess)' : ''}; earlier before tests and games.</i>`)

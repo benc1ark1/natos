@@ -23,6 +23,7 @@ import { loadConnection, saveTokens, tokensOf, updateConnection, type Connection
 import { MAIL_MARK, ingest } from '../mail/store'
 import { readIncoming } from '../mail/rules'
 import { GoneError, GoogleCal, ReconnectError, refreshAccess, type EventBody, type GEvent, type GTime } from './api'
+import { classroomDetails } from '../tracker/classroom'   // item 1c: test-like assignments keep their description
 
 export const PUSH_DAYS = 28        // Life OS holds the next 4 weeks
 export const READ_DAYS = 42        // other calendars: the next 6 weeks
@@ -381,7 +382,9 @@ async function importHomework(sb: SupabaseClient, list: { cal: CalSetting; g: GE
       const { error } = await sb.from('tasks').insert({
         user_id: userId, title, origin: 'school', importance: 'must', due_at: dueAtFromDate(due), status: autoStatus(due, today),
         source: 'import', source_text: g.summary ?? null, external_id: ext, subject_id: subject?.id ?? null,
-        details: [info.className, time ? `Due ${time}` : null].filter(Boolean).join(' · ') || null,
+        // study tracker (item 1c): a test-like assignment also keeps the teacher's description, so the bot can read it
+        // once and ask "Test on <date> – plan revision? ✅" (lib/tracker/classroom.ts)
+        details: classroomDetails([info.className, time ? `Due ${time}` : null].filter(Boolean).join(' · ') || null, title, g.description),
         hand_in: 'Google Classroom', hand_in_url: info.link,
       })
       if (error) throw new Error(`Couldn’t add homework “${title}”: ${error.message}`)

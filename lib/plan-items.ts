@@ -25,10 +25,10 @@ export type PickKind =
 /** What "done" moves forward when he ticks it or reports it. */
 export type DoneHint =
   | { kind: 'task'; taskId: string }                                   // completes (archives) the task
-  | { kind: 'topic'; topicId: string; step?: number }                   // the topic's last_done = today (and its step, if given)
+  | { kind: 'topic'; topicId: string; step?: number; physics?: 'booklet' | 'pmt' }   // the topic's last_done = today (and its step, if given; physics: its booklet / PMT questions = done)
   | { kind: 'mistakes'; mistakeIds: string[] }                          // each redo moves on a stage
-  | { kind: 'attempt'; goalId: string; what: 'diagnostic' | 'booklet' | 'timed' | 'paper' | 'real' | 'other' }   // asks for the score
-  | { kind: 'programme_item'; itemId: string }                         // the item is done; the programme moves to the next
+  | { kind: 'attempt'; goalId: string; what: 'diagnostic' | 'booklet' | 'timed' | 'paper' | 'real' | 'other'; label?: string }   // asks for the score (label: saved on the attempt — a booklet pick's topic code, so only that topic's booklet ends)
+  | { kind: 'programme_item'; itemId: string; score?: boolean }        // the item is done; the programme moves to the next (score: a gaps_only chapter test — ask the score; full marks = skip the chapter, else it stays to do)
   | { kind: 'act'; section: 'english' | 'maths' | 'reading' | 'science' | 'full' | 'flashcards' | 'review' }
   | { kind: 'block' }                                                   // nothing else: the plan block is just ticked
 
@@ -57,4 +57,6 @@ export type DayContext = {
   dow: number                   // ISO weekday, 1 = Mon … 7 = Sun
   mode: 'half_term' | 'school'  // a holiday (half-term, Christmas…) or a normal school week (weekends count as school weeks)
   studyMinutes: number          // minutes he has for study today (free time after events, training and routines)
+  maxPicks?: number             // the most study picks to return (default 5, clamped 1–6; Today passes 5 − training − tasks).
+                                // Tier-8 training picks passed in `extra` go through OUTSIDE this cap.
 }

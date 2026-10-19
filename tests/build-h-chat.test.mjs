@@ -12,7 +12,8 @@ const nat = (...a) => chat.nat(...a), q = (...a) => chat.q(...a), add = (t, v) =
 const last = () => chat.tg.sent().filter((m) => !m.text.startsWith('📌')).at(-1)
 const act = (o) => ({ op: 'setting', ref: '', value: '', date: '', date_to: '', time: '', time_to: '', number: 0, words: '', ...o })
 async function ask(text, changes) {
-  chat.ai.script(CHAT, () => brain({ intent: 'instruction', reply: 'Okay.', actions: changes.map(act) }))
+  // a ref can be read from the snapshot this message gets (event refs follow the database's row order, which an update can change)
+  chat.ai.script(CHAT, (body) => brain({ intent: 'instruction', reply: 'Okay.', actions: changes.map((c) => act(typeof c.ref === 'function' ? { ...c, ref: c.ref(body) } : c)) }))
   await nat(text)
 }
 const tap = async (label) => { const m = chat.tg.sent().filter((x) => chat.button(x, label)).at(-1); await chat.tap(chat.button(m, label), m.message_id) }
@@ -109,7 +110,7 @@ test('events and targets, for good: rename an event, say it isn’t school, chan
   await tap('Undo')
   assert.equal((await q(`select title from events where id = $1`, [ev.id]))[0].title, 'CS tutor')
 
-  await ask('holiday camp is not school', [{ op: 'event_set', ref: refOf('Holiday camp'), value: 'school=no' }])
+  await ask('holiday camp is not school', [{ op: 'event_set', ref: (body) => body.messages[0].content[0].text.match(/(E\d+) \| Holiday camp/)[1], value: 'school=no' }])
   assert.match(last().text, /🏫 <b>Holiday camp<\/b>: school \(guessed\) → <b>not school<\/b>/)
   await tap('Apply')
   assert.equal((await q(`select is_school from events where id = $1`, [camp.id]))[0].is_school, false)

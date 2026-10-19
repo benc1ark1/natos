@@ -24,12 +24,11 @@ const colours = async (names) => Object.fromEntries((await q(`select name, statu
 test('maths tracker and "what maths should I do?": instant, no AI, acceleration through the books', { skip }, async () => {
   await seed()
   await chat.nat('/maths')
+  // item 1 (overnight queue): /maths is the study tracker now (topics by strand / book as colour chips)
   const tr = chat.last().text
-  assert.match(tr, /📐 <b>Maths tracker<\/b>/)
-  assert.match(tr, /<b>Maths<\/b> 0\/44 🟢/)
-  assert.match(tr, /<b>Further Maths<\/b> 0\/36 🟢/)
-  assert.match(tr, /Book 1: ⚪{22}/u)
-  assert.match(tr, /🚀 Acceleration mode/)
+  assert.match(tr, /^📐 <b>Maths \+ Further Maths<\/b> · 0\/80 🟢/)
+  assert.match(tr, /<b>Maths<\/b>\nBook 1 ⚪{22} <i>0\/22 🟢<\/i>\nBook 2 ⚪{22}/u)
+  assert.match(tr, /<b>Further Maths<\/b>\nPure Core 1 ⚪{6}/u)
   await chat.nat('what maths should I do?')
   assert.match(chat.last().text, /Next: <b>🚀 Maths: Proof &amp; mathematical communication — textbook \+ questions<\/b>, 60m/)
   noAI()
@@ -37,11 +36,12 @@ test('maths tracker and "what maths should I do?": instant, no AI, acceleration 
 
 test('"matrices green" and "Book 1 chapters 1–13 green": one card, saved on ✅, Undo puts them back', { skip }, async () => {
   await seed()
-  chat.ai.script(CHAT, brain({ intent: 'instruction', reply: 'Matrices to green.', actions: [act({ value: 'topics=Matrices; status=green' })] }))
+  // item 1: "matrices green" is understood without the AI now (the study tracker's fast path)
   await chat.nat('matrices green')
+  noAI()
   chat.noSurprises()
   let card = chat.last()
-  assert.match(card.text, /📐 ⚪ Matrices → <b>🟢 exam ready<\/b>/)
+  assert.match(card.text, /• <b>Matrices<\/b>: ⚪ → <b>🟢<\/b> · review /)
   assert.equal((await colours(['Matrices'])).Matrices, 'not_started', 'nothing saved before ✅')
   await chat.tap(chat.button(card, 'Apply'), card.message_id)
   assert.equal((await colours(['Matrices'])).Matrices, 'exam_ready')

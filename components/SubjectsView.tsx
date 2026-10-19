@@ -7,6 +7,9 @@ import { areaColor, makeLookup } from '@/lib/lookup'
 import { columnOf } from '@/lib/tasks'
 import type { Resource } from '@/lib/types'
 import Select from './controls/Select'
+import TrackerExport from './TrackerExport'
+import TrackerImport from './TrackerImport'
+import TrackerView from './TrackerView'
 import { Empty, ErrorBox, Loading, useLoad, useToast } from './ui'
 
 async function loadSubjects() {
@@ -18,10 +21,12 @@ async function loadSubjects() {
   return { lookup: makeLookup(lk.categories, lk.subjects), tasks, resources: rows<Pick<Resource, 'id' | 'subject_id'>>(res, 'resources') }
 }
 
-/** Study / Athletic / Personal, with their subjects as cards. */
+/** The study tracker (Maths / Further Maths / Physics), then Study / Athletic / Personal with their subjects as cards. */
 export default function SubjectsView() {
   const { data, error, loading, reload } = useLoad(loadSubjects)
   const toast = useToast()
+  const [sheet, setSheet] = useState<'import' | 'export' | null>(null)
+  const [trackerKey, setTrackerKey] = useState(0)
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
   const [cat, setCat] = useState('')
@@ -44,11 +49,23 @@ export default function SubjectsView() {
       <div className="pagehead">
         <div>
           <div className="lbl"><span className="n">//</span> Subjects</div>
-          <h1 className="pagetitle serif">Study, Athletic, Personal</h1>
+          <h1 className="pagetitle serif">Subjects</h1>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Link className="btn ghost" href="/maths">📐 Maths tracker</Link>
-          <button className="btn" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>{adding ? 'Close' : '+ Subject'}</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn sm" onClick={() => setSheet(sheet === 'export' ? null : 'export')} aria-expanded={sheet === 'export'}>Export my tracker</button>
+          <button className="btn sm" onClick={() => setSheet(sheet === 'import' ? null : 'import')} aria-expanded={sheet === 'import'}>Import tracker (.xlsx)</button>
+        </div>
+      </div>
+
+      {sheet === 'import' && <TrackerImport onClose={() => setSheet(null)} onSaved={() => { setTrackerKey((k) => k + 1); reload() }} />}
+      {sheet === 'export' && <TrackerExport onClose={() => setSheet(null)} />}
+      <TrackerView key={trackerKey} toast={toast.show} />
+
+      <div className="ch" style={{ marginTop: 8 }}>
+        <span className="lbl">All subjects</span>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Link className="btn sm ghost" href="/maths">📐 Maths view</Link>
+          <button className="btn sm" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>{adding ? 'Close' : '+ Subject'}</button>
         </div>
       </div>
 
