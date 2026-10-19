@@ -25,7 +25,7 @@ test('bug 1, word for word: ✏️ Edit, then "That okay maybe" is not saved as 
   assert.match(card.text, /<b>Task<\/b>: Physics homework/)
   assert.match(card.text, /Nothing is saved until you tap ✅ Save/)
 
-  await tap(button(card, 'Edit'), card.message_id)
+  await tap(button(card, 'Change'), card.message_id)
   assert.equal((await cards())[0].status, 'editing', 'Edit keeps the card waiting (it used to cancel it)')
   assert.match(last().text, /What should I change/)
   assert.ok(button(last(), 'Save as is'), 'the card can still be saved as it is')
@@ -133,7 +133,7 @@ test('after ✏️ Edit, a whole new version is the correction even if the AI ca
   chat.ai.script(CHAT, brain({ intent: 'new', item_text: 'SMC paper' }))
   chat.ai.script(SORT, sorted({ title: 'SMC paper' }))
   await nat('SMC paper')
-  await tap(button(last(), 'Edit'), last().message_id)
+  await tap(button(last(), 'Change'), last().message_id)
   chat.ai.script(CHAT, brain({ intent: 'new', item_text: 'SMC past paper 2024, 90 min' }))
   chat.ai.script(SORT, sorted({ title: 'SMC past paper 2024', duration_minutes: 90 }))
   await nat('SMC past paper 2024, 90 min')

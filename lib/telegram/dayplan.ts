@@ -45,7 +45,7 @@ export type PlanRequest = { date: string; from: string | null; minutes: number |
 const day = (iso: string) => `${dowShort(iso)} ${shortDate(iso)}`
 const KIND_WORD: Record<string, string> = { focus: 'focus', light: 'light', training: 'training', rest: 'rest' }
 export const planButtons = (id: string): Button[][] => [
-  [{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '✏️ Change', callback_data: `e:${id}` }, { text: '✖ Cancel', callback_data: `x:${id}` }],
+  [{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '✏️ Change', callback_data: `e:${id}` }, { text: '❌ Cancel', callback_data: `x:${id}` }],
 ]
 
 /**
@@ -329,7 +329,7 @@ export async function offerSlot(sb: SupabaseClient, chatId: number, task: Task, 
     payload.summary = plain(body)
     const { data: row } = await sb.from('telegram_pending').insert({ kind: 'plan', text: `fit ${task.title}`, payload }).select('id').single()
     if (!row) return false
-    await say(sb, chatId, body, [[{ text: '✅ Add', callback_data: `a:${row.id}` }, { text: '✖ No', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'plan' })
+    await say(sb, chatId, body, [[{ text: '✅ Add', callback_data: `a:${row.id}` }, { text: '❌ No', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'plan' })
     return true
   }
   await say(sb, chatId, `<i>Heads-up: no free slot for “${esc(task.title)}” before it’s due (${day(deadline)}) in this week’s plan.</i>`)

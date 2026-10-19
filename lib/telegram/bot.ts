@@ -2,24 +2,27 @@
 // Messages queue up and are handled one at a time, in order (lib/telegram/turns.ts); each goes to the
 // brain (lib/telegram/converse.ts). Button taps are handled straight away (lib/telegram/cards.ts).
 // Only called after lib/telegram/guard.ts has checked the secret and that the update is Nat's.
+// Speed (queue item 3): "typing…" goes out before anything else; the queue takes as few round trips as it can; each
+// message's timings are logged (supabase/speed.sql) and /speed shows them.
 import 'server-only'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { usageReport } from '../ai/usage'
 import { timeOf, todayISO } from '../time'
-import { esc, send, setMenuButton } from './api'
+import { esc, keepTyping, send, setMenuButton } from './api'
 import { buildBrief, loadDay } from './brief'
 import { refreshPinned } from './pinned'
 import { cancelOpenCard, newCard, onTap } from './cards'
-import { converse, type Outcome } from './converse'
+import { converse, forgetContext, type Outcome } from './converse'
 import type { TgUpdate } from './guard'
 import { openOwnerSession } from './owner-session'
 import { claim } from './sent'
-import { ideasText } from './ideas'
+import { ideasCommand } from './ideas'
+import { flushWrites, markPath, runTimed, timingOf } from './speed'
 import { mailText } from '../mail/draft'
 import { loadConnection } from '../integrations/store'
 import { syncGoogle } from '../google/sync'
 import { isLowRecovery, syncWhoop, whoopDay, whoopWords } from '../whoop/sync'
-import { enqueue, extendLock, isDone, nextQueued, releaseLock, say, setStatus, takeLock, type TurnRow } from './turns'
+import { enqueue, extendLock, isDone, nextQueued, releaseLock, say, setStatus, speedText, takeLock, type TurnRow, type TurnTiming } from './turns'
 import { pluginCommand, pluginCommands } from './plugins'
 
 export const appUrl = () => {
@@ -49,7 +52,7 @@ const BUILTIN_COMMANDS = [
   ['today', 'The rest of today'], ['week', 'The next 7 days'], ['coming', 'Deadlines, tests and events soon'], ['free', 'Free time (add a day)'],
   ['inbox', 'Your Inbox'], ['brief', 'Today’s brief'], ['pin', 'Refresh the pinned Today'], ['app', 'Open the dashboard'],
   ['google', 'Google Calendar status'], ['sync', 'Sync Google Calendar now'], ['whoop', 'Whoop recovery'], ['mail', 'Email watcher'],
-  ['maths', 'Maths tracker'], ['ideas', 'Things I can’t do yet'], ['usage', 'AI spend'], ['cancel', 'Drop the open card'], ['help', 'How to use me'],
+  ['maths', 'Maths tracker'], ['ideas', 'Things I can’t do yet'], ['usage', 'AI spend'], ['speed', 'My reply times'], ['cancel', 'Drop the open card'], ['help', 'How to use me'],
 ].map(([command, description]) => ({ command, description }))
 export const COMMANDS = (() => {
   const extra = pluginCommands()
@@ -62,31 +65,59 @@ export const COMMANDS = (() => {
 const MAX_RUN_MS = 100_000   // stop starting new messages after this; the next message picks up the rest
 const WAIT_MS = 60_000       // how long a message waits for the one before it to finish
 
+// Taps that do some work before they answer (apply, save, undo, a draft, slot options…) get "typing…" while they do.
+// Taps that redraw a card in place (q, c, k, j) or answer at once (e, x) don't.
+const WORK_TAP = /^[asi12ufptgdo]:/
+// When each message reached this instance, so it's timed from its arrival (not from when its turn came)
+const arrivals = new Map<number, number>()
+
 /** Main entry: runs after the webhook has answered Telegram. Errors become a message to Nat. */
 export async function handleUpdate(update: TgUpdate): Promise<void> {
+  const arrived = Date.now()
   const chatId = (update.message?.chat?.id ?? update.callback_query?.message?.chat?.id)!
+  const text = update.message?.text?.trim()
+  const helpOnly = !!text && /^\/(start|help)\b/.test(text)
+  // the very first thing, before the session or the queue: Nat sees at once that the bot is on it
+  const stopTyping = (text && !helpOnly) || WORK_TAP.test(update.callback_query?.data ?? '') ? keepTyping(chatId) : null
+  const { done } = runTimed(arrived, async () => {
+    try {
+      if (helpOnly) {   // no data needed
+        await send(chatId, HELP)
+        const url = appUrl()
+        if (url) await setMenuButton(chatId, `${url}/tg`).catch(() => null)   // "Dashboard" opens the app inside Telegram
+        return
+      }
+
+      const sb = await openOwnerSession()
+      if (update.callback_query) {
+        forgetContext()   // a tap can change his data: the next message reads everything fresh
+        // Telegram may resend an update; handle each tap once.
+        if (typeof update.update_id === 'number' && !(await claim(sb, `upd:${update.update_id}`))) return
+        return await onTap(sb, chatId, update.callback_query)
+      }
+      if (!text) { await send(chatId, 'I can only read text for now. Try the dictation mic on your keyboard.'); return }
+
+      // queue the message and try for the lock at the same time (one round trip instead of two)
+      const [queued, lock] = await Promise.allSettled([enqueue(sb, text, update.message?.message_id ?? null), takeLock(sb)])
+      const locked = lock.status === 'fulfilled' && lock.value
+      if (queued.status === 'rejected' || queued.value === null) {
+        if (locked) await releaseLock(sb).catch(() => null)
+        if (queued.status === 'rejected') throw queued.reason
+        return   // Telegram resent a message that's already queued or handled
+      }
+      if (lock.status === 'rejected') throw lock.reason
+      arrivals.set(queued.value, arrived)
+      // handled by now (here or by another instance's drain): never left behind in the map
+      try { await drain(sb, chatId, queued.value, locked) } finally { arrivals.delete(queued.value) }
+    } catch (e) {
+      await send(chatId, `⚠️ ${esc(e instanceof Error ? e.message : 'Something went wrong.')}`).catch(() => null)
+    }
+  })
   try {
-    const text = update.message?.text?.trim()
-    if (text && /^\/(start|help)\b/.test(text)) {   // no data needed
-      await send(chatId, HELP)
-      const url = appUrl()
-      if (url) await setMenuButton(chatId, `${url}/tg`).catch(() => null)   // "Dashboard" opens the app inside Telegram
-      return
-    }
-
-    const sb = await openOwnerSession()
-    if (update.callback_query) {
-      // Telegram may resend an update; handle each tap once.
-      if (typeof update.update_id === 'number' && !(await claim(sb, `upd:${update.update_id}`))) return
-      return await onTap(sb, chatId, update.callback_query)
-    }
-    if (!text) { await send(chatId, 'I can only read text for now. Try the dictation mic on your keyboard.'); return }
-
-    const mine = await enqueue(sb, text, update.message?.message_id ?? null)
-    if (mine === null) return   // Telegram resent a message that's already queued or handled
-    await drain(sb, chatId, mine)
-  } catch (e) {
-    await send(chatId, `⚠️ ${esc(e instanceof Error ? e.message : 'Something went wrong.')}`).catch(() => null)
+    await done
+  } finally {
+    stopTyping?.()
+    await flushWrites()
   }
 }
 
@@ -97,48 +128,68 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /**
  * Handle queued messages in order until none are left. Only one run at a time holds the lock; a message
  * that arrives meanwhile waits until its turn has been handled (by whichever run holds the lock).
+ * `locked`: this run already holds the lock (taken while its message was queued).
  */
-export async function drain(sb: SupabaseClient, chatId: number, mine: number): Promise<void> {
+export async function drain(sb: SupabaseClient, chatId: number, mine: number, locked = false): Promise<void> {
   const started = Date.now()
+  let have = locked
   while (Date.now() - started < WAIT_MS) {
-    if (await takeLock(sb)) {
+    if (have || await takeLock(sb)) {
+      have = true
       try {
-        while (Date.now() - started < MAX_RUN_MS) {
-          const { next, lost } = await nextQueued(sb)
+        let { next, lost } = await nextQueued(sb)
+        for (;;) {
           for (const t of lost) await say(sb, chatId, `⚠️ Sorry, I lost track of “${esc(t.text.slice(0, 80))}”. Send it again?`)
-          if (!next) return
-          await runTurn(sb, chatId, next)
-          await extendLock(sb)
+          if (!next || Date.now() - started >= MAX_RUN_MS) return
+          const turn = next
+          const { outcome, timing } = await runTurn(sb, chatId, turn)
+          // its status, the lock and the next message in one round trip (after this turn's memory is written)
+          const [, , queue] = await Promise.all([
+            setStatus(sb, turn.id, 'done', outcome, timing),
+            extendLock(sb),
+            flushWrites().then(() => nextQueued(sb, turn.id)),
+          ])
+          ;({ next, lost } = queue)
         }
       } finally {
+        forgetContext()
+        await flushWrites()
         await releaseLock(sb)
       }
-      return
     }
     if (await isDone(sb, mine)) return
     await sleep(700)
   }
 }
 
-async function runTurn(sb: SupabaseClient, chatId: number, turn: TurnRow): Promise<void> {
-  await setStatus(sb, turn.id, 'working')
+/** One message, on its own clock (from when it arrived): its outcome, and its timings for telegram_turns. */
+async function runTurn(sb: SupabaseClient, chatId: number, turn: TurnRow): Promise<{ outcome: Outcome | 'command'; timing: TurnTiming }> {
+  const start = arrivals.get(turn.id) ?? (Date.parse(turn.created_at) || Date.now())
+  arrivals.delete(turn.id)
+  // 'working' goes in alongside the turn's first reads (it only matters if this run dies mid-message)
+  const working = setStatus(sb, turn.id, 'working').catch(() => null)
   let outcome: Outcome | 'command' = 'failed'
-  try {
-    outcome = await respond(sb, chatId, turn)
-  } catch (e) {
-    await say(sb, chatId, `⚠️ ${esc(e instanceof Error ? e.message : 'Something went wrong.')}`).catch(() => null)
-  } finally {
-    await setStatus(sb, turn.id, 'done', outcome)
-  }
+  const { clock, done } = runTimed(start, async () => {
+    try {
+      outcome = await respond(sb, chatId, turn)
+    } catch (e) {
+      await say(sb, chatId, `⚠️ ${esc(e instanceof Error ? e.message : 'Something went wrong.')}`).catch(() => null)
+    }
+  })
+  await done
+  await working
+  return { outcome, timing: timingOf(clock) }
 }
 
 async function respond(sb: SupabaseClient, chatId: number, turn: TurnRow): Promise<Outcome | 'command'> {
   const text = turn.text
   const ctx = { claim: (key: string) => claim(sb, key) }
   if (!text.startsWith('/')) return converse(sb, chatId, turn, ctx)
-
+  markPath('command')
   // a plug-in's command (lib/telegram/plugins) wins over a built-in one of the same name
   const pc = pluginCommand(text)
+  // any command but the built-in lists may change his data: the next message reads everything fresh
+  if (pc || !/^\/(ask|inbox|week|coming|free|postponed|next|today|maths)\b/.test(text)) forgetContext()
   if (pc) {
     const out = await pc.run({ sb, chatId, today: todayISO(), now: new Date(), args: pc.args, appUrl: appUrl() })
     if (out) await say(sb, chatId, out.html, out.buttons)
@@ -171,7 +222,9 @@ async function respond(sb: SupabaseClient, chatId: number, turn: TurnRow): Promi
     return 'command'
   }
   if (/^\/usage\b/.test(text)) { await say(sb, chatId, await usageText(sb)); return 'command' }
-  if (/^\/ideas\b/.test(text)) { await say(sb, chatId, await ideasText(sb)); return 'command' }
+  const ideas = text.match(/^\/ideas\b\s*([\s\S]*)$/)
+  if (ideas) { await say(sb, chatId, await ideasCommand(sb, ideas[1])); return 'command' }
+  if (/^\/speed\b/.test(text)) { await say(sb, chatId, await speedText(sb)); return 'command' }
   if (/^\/(google|sync)\b/.test(text)) { await say(sb, chatId, await googleText(sb, /^\/sync\b/.test(text))); return 'command' }
   if (/^\/whoop\b/.test(text)) { await say(sb, chatId, await whoopText(sb)); return 'command' }
   if (/^\/mail\b/.test(text)) { await say(sb, chatId, await mailText(sb)); return 'command' }

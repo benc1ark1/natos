@@ -67,6 +67,6 @@ export async function refitAfterChange(sb: SupabaseClient, chatId: number, why: 
   payload.summary = plain(lines.join('\n'))
   const { data: row } = await sb.from('telegram_pending').insert({ kind: 'plan', text: `re-plan (${why})`, payload }).select('id').single()
   if (!row) return null
-  await say(sb, chatId, `${lines.join('\n')}\n\n✅ to move ${r.moves.length === 1 ? 'it' : 'them'}?`, [[{ text: '✅ Move', callback_data: `a:${row.id}` }, { text: '✖ Keep as is', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'plan' })
+  await say(sb, chatId, `${lines.join('\n')}\n\n✅ to move ${r.moves.length === 1 ? 'it' : 'them'}?`, [[{ text: '✅ Move', callback_data: `a:${row.id}` }, { text: '❌ Keep as is', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'plan' })
   return 'moves'
 }

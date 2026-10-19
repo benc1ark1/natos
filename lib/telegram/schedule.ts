@@ -173,6 +173,6 @@ export async function wrapUp(sb: SupabaseClient, chatId: number, d: ViewData, no
   const payload = { date: tomorrow, energy: 'normal', energyGiven: false, add: true, blocks: [], unplaced: [], note: '', pushBack: '', ripple: { moves, warnings: [], tbc: [] }, summary: plain(lines.join('\n')) }
   const { data: row } = await sb.from('telegram_pending').insert({ kind: 'plan', text: 'end of day', payload }).select('id').single()
   if (!row) throw new Error('Couldn’t hold the wrap-up')
-  await say(sb, chatId, `${lines.join('\n')}\n\n✅ to move ${moves.length === 1 ? 'it' : 'them'}?`, [[{ text: moves.every((m) => m.to.date === tomorrow) ? '✅ Move to tomorrow' : '✅ Move them', callback_data: `a:${row.id}` }, { text: '✖ Leave them', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'plan' })
+  await say(sb, chatId, `${lines.join('\n')}\n\n✅ to move ${moves.length === 1 ? 'it' : 'them'}?`, [[{ text: moves.every((m) => m.to.date === tomorrow) ? '✅ Move to tomorrow' : '✅ Move them', callback_data: `a:${row.id}` }, { text: '❌ Leave them', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'plan' })
   return true
 }

@@ -74,10 +74,14 @@ export async function fakeAI() {
   const requests = []
   const unexpected = []
   const queues = new Map()   // model -> [reply | fn]
+  const fallbacks = new Map()   // model -> fn: the answer when nothing is scripted (kept across reset)
+  const fellBack = []           // requests a fallback answered: not in `requests`, so counts of AI calls stay as before
+  let seq = 0
   const { server, url } = await serve(async (req, body) => {
-    requests.push({ path: req.url, headers: req.headers, body })
+    const entry = { path: req.url, headers: req.headers, body, seq: ++seq }
     const q = queues.get(body.model) ?? []
-    const next = q.shift()
+    let next = q.shift()
+    if (!next && fallbacks.has(body.model)) { fellBack.push(entry); next = fallbacks.get(body.model) } else requests.push(entry)
     if (!next) {
       unexpected.push(body.model)
       return { status: 500, json: { type: 'error', error: { type: 'api_error', message: `no scripted reply for ${body.model}` } } }
@@ -86,7 +90,7 @@ export async function fakeAI() {
     if (r.status) return r
     return {
       json: {
-        id: `msg_${requests.length}`, type: 'message', role: 'assistant', model: body.model,
+        id: `msg_${seq}`, type: 'message', role: 'assistant', model: body.model,
         content: [{ type: 'text', text: JSON.stringify(r) }],
         stop_reason: 'end_turn', stop_sequence: null,
         usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 500, cache_creation_input_tokens: 0 },
@@ -97,14 +101,20 @@ export async function fakeAI() {
     url, requests, unexpected, close: () => server.close(),
     /** Script the next reply for a model: an object (sent as the JSON answer), {status} for an error, or a function. */
     script: (model, ...replies) => { queues.set(model, [...(queues.get(model) ?? []), ...replies]) },
+    /** The answer for a model when nothing is scripted for it (instead of failing the test as unexpected). Those requests
+     *  are left out of `requests` (byModel still shows them). */
+    fallback: (model, fn) => { fallbacks.set(model, fn) },
     pending: () => [...queues.values()].reduce((n, q) => n + q.length, 0),
-    reset: () => { requests.length = 0; unexpected.length = 0; queues.clear() },
-    byModel: (model) => requests.filter((r) => r.body.model === model),
+    reset: () => { requests.length = 0; unexpected.length = 0; fellBack.length = 0; queues.clear() },
+    byModel: (model) => [...requests, ...fellBack].filter((r) => r.body.model === model).sort((a, b) => a.seq - b.seq),
   }
 }
 
 /** A brain decision with every field filled in (the model always sends all of them). */
 export const brain = (o) => ({ intent: 'chat', reply: '', item_text: '', item_kind: '', plan: [], unsure: '', fact_to_save: '', ...o })
+
+/** A quick-router answer (lib/telegram/brain.ts ROUTE_SCHEMA) with every field filled in. */
+export const routed = (o) => ({ route: 'brain', reply: '', show: '', show_arg: '', item_text: '', what: '', ...o })
 
 /** A sorter answer with every field filled in. */
 export const sorted = (o) => ({

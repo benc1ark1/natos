@@ -83,7 +83,7 @@ export const cleanupButtons = (id: string, rows: CleanRow[]): Button[][] => {
   const per = rows.map((r, i): Button => ({ text: `${r.keep ? '✓' : '🗄'} ${i + 1} ${r.title}`.slice(0, 36), callback_data: `c:${id}:r${i}` }))
   const out: Button[][] = []
   for (let i = 0; i < per.length; i += 2) out.push(per.slice(i, i + 2))
-  out.push([{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '✖ Not now', callback_data: `x:${id}` }])
+  out.push([{ text: '✅ Apply', callback_data: `a:${id}` }, { text: '❌ Not now', callback_data: `x:${id}` }])
   return out
 }
 

@@ -96,7 +96,7 @@ export async function proposeOwenDays(sb: SupabaseClient, chatId: number, data: 
   const body = lines.join('\n')
   const { data: row, error } = await sb.from('telegram_pending').insert({ kind: 'action', text: 'Owen’s days', payload: { actions: [action], problems: [], summary: plain(body), owen: { days, message: msg } } }).select('id').single()
   if (error || !row) throw new Error(`Couldn’t hold the card: ${error?.message ?? 'not saved'}`)
-  const msgId = await say(sb, chatId, body, [[{ text: '✅ Use these days', callback_data: `a:${row.id}` }, { text: '✖ Not now', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'question' })
+  const msgId = await say(sb, chatId, body, [[{ text: '✅ Use these days', callback_data: `a:${row.id}` }, { text: '❌ Not now', callback_data: `x:${row.id}` }]], { pending_id: row.id, intent: 'question' })
   if (msgId) await sb.from('telegram_pending').update({ payload: { actions: [action], problems: [], summary: plain(body), owen: { days, message: msg }, card_message_id: msgId } }).eq('id', row.id)
   return true
 }

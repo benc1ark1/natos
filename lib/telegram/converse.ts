@@ -1,6 +1,9 @@
 // Server-only: one typed message from Nat -> the brain decides what it is -> the bot acts on it.
 // New items and corrections become cards (nothing saved before ✅). Questions are answered from his data.
 // Past the daily AI cap, or if the AI is down, "simple mode" keeps capture working without the brain.
+// Speed (queue item 3): cheapest first. Exact lists (no AI) → plain-code answers and plug-in fast paths (no AI) → the
+// quick router (a small model, small prompt: thanks, an exact list, an obvious new item) → the full brain. The brain's
+// context is read while the cheaper steps run, so handing a message on to the brain costs almost no extra time.
 import 'server-only'
 import { guidesForAI, relevantGuides } from '../guides-search'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -8,12 +11,12 @@ import { recordUsage, budget } from '../ai/usage'
 import { loadPlannerContext, type PlannerContext } from '../ask/server'
 import type { AskAnswer } from '../ask/types'
 import { todayISO, weekStartISO } from '../time'
-import { esc, typing, type Button } from './api'
-import { looksLikeMeta, looksLikePartialEdit, think, type Decision } from './brain'
+import { esc, type Button } from './api'
+import { botAsked, looksLikeChange, looksLikeMeta, looksLikePartialEdit, route, think, triage, type Decision } from './brain'
 import { checkActions, loadRows } from './actions'
 import { proposePlan, proposeWeekPlan } from './dayplan'
 import { noteWeek, proposeTrainingPlan } from './trainplan'
-import { actionCard, cardForAI, editButtons, newCard, openCard, planEffect, replaceOld, type Ask, type Pending } from './cards'
+import { actionCard, cardForAI, editButtons, newCard, openCard, planEffect, replaceOld, worldOf, type Ask, type Pending } from './cards'
 import { recentTurns, say, transcript, type Ref, type TurnRow } from './turns'
 import { ASYNC_VIEWS, freeTimeForAI, loadViewData, matchView, type ViewData } from './views'
 import { saveIdea } from './ideas'
@@ -23,6 +26,7 @@ import { renderAny, weekPlanForAI } from './views-more'
 import { proposeOwenDays } from './owen'
 import { pluginFor, runFast } from './plugins'
 import type { FastResult } from './plugin-types'
+import { markPath } from './speed'
 
 export type Outcome = Decision['intent'] | 'failed'
 
@@ -32,39 +36,99 @@ export function isQuestion(text: string): boolean {
   return /\?\s*$/.test(t) || /^(what|what's|whats|how|when|where|which|who|why|should|shall|am i|can i|could i|plan my|tell me|show me|give me)\b/.test(t)
 }
 
+// ---------------------------------------------------------------------------
+// The brain's context (his whole snapshot, the day's data, the optimiser's week): read once per message, started early
+// ---------------------------------------------------------------------------
+
+type Context = { ctx: Promise<PlannerContext>; data: Promise<ViewData>; week: Promise<string | undefined>; at: number; today: string }
+// The context the last message of this drain read, for the next one (messages queued back to back). Only while nothing
+// can have changed: forgotten after any tap, command or change in this instance, at the end of the drain, after 30 s,
+// and whenever a card was saved or undone since it was read (checked with the next message's first reads).
+let memo: Context | null = null
+const MEMO_MS = 30_000
+
+/** A tap, a command, the end of a drain or anything that may change his data: the next message reads everything fresh. */
+export function forgetContext(): void { memo = null }
+
+function readContext(sb: SupabaseClient, today: string): Context {
+  const ctx = loadPlannerContext(sb)
+  const data = loadViewData(sb, today)
+  const week = data.then((d) => weekPlanForAI(sb, d)).catch(() => undefined)
+  // awaited later (and their errors shown then); this only stops "unhandled rejection" when a message never needs them
+  // a read that failed is never reused: the next message reads again (one Supabase blip = one ⚠️, not one per message)
+  const c: Context = { ctx, data, week, at: Date.now(), today }
+  ctx.catch(() => { if (memo === c) memo = null })
+  data.catch(() => { if (memo === c) memo = null })
+  return c
+}
+
+/** Was a card saved or undone (in any instance) since the context was read? Then his data may have changed. */
+async function changedSince(sb: SupabaseClient, at: number): Promise<boolean> {
+  const { data, error } = await sb.from('telegram_pending').select('id').in('status', ['saved', 'undone'])
+    .gte('updated_at', new Date(at - 1000).toISOString()).limit(1)
+  return !!error || !!data?.length
+}
+
+// What a message can do without changing his data (it may make a card): the context it read stays good for the next one.
+const READ_ONLY: readonly Outcome[] = ['question', 'chat', 'unclear', 'new', 'correction', 'instruction', 'app_idea']
+
 export async function converse(sb: SupabaseClient, chatId: number, turn: TurnRow, opts: { claim: (key: string) => Promise<boolean>; forceQuestion?: boolean }): Promise<Outcome> {
+  let out: Outcome
+  try { out = await answerMessage(sb, chatId, turn, opts) } catch (e) { forgetContext(); throw e }
+  if (!READ_ONLY.includes(out)) forgetContext()
+  return out
+}
+
+async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, opts: { claim: (key: string) => Promise<boolean>; forceQuestion?: boolean }): Promise<Outcome> {
   const message = turn.text.replace(/^\/ask\b\s*/, '').trim()
   if (!message) { await say(sb, chatId, 'Send a question, e.g. /ask what should I do now?'); return 'unclear' }
 
-  const [history, card, money] = await Promise.all([recentTurns(sb, turn.id), openCard(sb), budget(sb).catch(() => null)])
+  const today = todayISO()
+  const matched = matchView(message, today)
+  const askNow = /^(?:ok |okay )?(?:ask me (?:now|the questions|them)|go through (?:the|your) questions|ask away|start asking(?: me)?(?: questions)? again)\b/i.test(message)
+  const stopAsking = /^(?:please )?(?:stop|pause|no more) (?:asking(?: me)?(?: questions)?|questions)\b/i.test(message)
+  const plain = !message.startsWith('/') && !matched && !askNow && !stopAsking
+  // a typed answer to the question waiting (only possible when no instant list matched): read alongside the rest
+  const gap = plain ? typedGapAnswer(sb, chatId, message).catch(() => false) : null
+  // the last message of this drain read his whole context: still good unless a card was saved or undone since
+  const reuse = memo && memo.today === today && Date.now() - memo.at < MEMO_MS ? memo : null
+
+  const [history, card, money, stale] = await Promise.all([
+    recentTurns(sb, turn.id), openCard(sb), budget(sb).catch(() => null), reuse ? changedSince(sb, reuse.at) : false,
+  ])
+  // His whole context (snapshot, the day, the optimiser's week): read once no instant answer can do (alongside the
+  // quick router, so handing on to the brain costs almost nothing), or reused
+  let context: Context | null = reuse && !stale ? reuse : null
+  const contextNow = () => (context ??= (memo = readContext(sb, today)))
 
   // Instant, free answers ("what's in my inbox?", /week, "when am I free tomorrow?"): no AI at all.
   // Not while a card is waiting, where a word like "today" may be a change to the card.
-  const today = todayISO()
   // (with a card waiting, only the whole-question lists answer instantly: "where can I save time?", "how's my load?")
-  const matched = matchView(message, today)
   const view = !card || message.startsWith('/') || (matched && ASYNC_VIEWS.includes(matched.view)) ? matched : null
   if (view && !opts.forceQuestion) {
+    markPath('list')
     const r = await renderAny(sb, await loadViewData(sb, today), view)
     await say(sb, chatId, r.html, r.buttons, { intent: 'question', refs: r.refs })
     return 'question'
   }
   // Build O: "ask me now" goes through the gap questions; a typed answer to the question waiting is saved (no AI)
   if (!message.startsWith('/')) {
-    if (/^(?:ok |okay )?(?:ask me (?:now|the questions|them)|go through (?:the|your) questions|ask away|start asking(?: me)?(?: questions)? again)\b/i.test(message)) {
+    if (askNow) {
+      markPath('fast')
       await release(sb, 'gaps:paused')   // questions back on (a pause he set)
       if (!(await askNextGap(sb, chatId, new Date(), { force: true }))) await say(sb, chatId, 'Nothing to ask right now (or it’s school / late: I’ll ask later).', undefined, { intent: 'question' })
       return 'question'
     }
-    if (/^(?:please )?(?:stop|pause|no more) (?:asking(?: me)?(?: questions)?|questions)\b/i.test(message)) {
+    if (stopAsking) {
+      markPath('fast')
       await claim(sb, 'gaps:paused').catch(() => false)
       await say(sb, chatId, '⏸ No more questions until you say “ask me now”. Plans keep using my guesses (“what do you still need to know?” lists them).', undefined, { intent: 'instruction' })
       return 'instruction'
     }
-    if (await typedGapAnswer(sb, chatId, message)) return 'instruction'
+    if (await (gap ?? typedGapAnswer(sb, chatId, message))) { markPath('fast'); forgetContext(); return 'instruction' }
     // "which days should I give Owen?": the optimiser on a typical week (no AI)
     if (/\b(?:which|what) days (?:should|do|can) i (?:give|tell|send|offer)(?: to)? owen\b|\bbest days for owen\b|\bowen'?s days\??$|\bdays (?:to give|for) owen\b/i.test(message)) {
-      await typing(chatId)
+      markPath('fast')
       await proposeOwenDays(sb, chatId, await loadViewData(sb, today))
       return 'question'
     }
@@ -73,20 +137,46 @@ export async function converse(sb: SupabaseClient, chatId: number, turn: TurnRow
     const fast = await runFast(message, { sb, chatId, today, now: new Date(), cardOpen: !!card, cardEditing: card?.status === 'editing' })
     if (fast) {
       const out = await useFast(sb, chatId, message, fast.result)
-      if (out) return out
+      if (out) { markPath('fast'); if (fast.result.kind === 'handled') forgetContext(); return out }
     }
   }
 
   if (money?.over) {
+    markPath('simple')
     if (await opts.claim(`cap:${todayISO()}`)) {
       await say(sb, chatId, `💸 Today’s AI limit ($${money.cap.toFixed(2)}) is used up, so I’m in simple mode until midnight: new things still get sorted, but questions and changes wait. /usage for details · /cap 2 to raise the limit.`)
     }
     return simpleMode(sb, chatId, message, card, 'Today’s AI limit is used up')
   }
 
-  await typing(chatId)
-  const [ctx, data] = await Promise.all([loadPlannerContext(sb), loadViewData(sb, today)])
-  const weekPlan = await weekPlanForAI(sb, data).catch(() => undefined)
+  // The quick router: thanks, an exact list, an obvious new item, without the full brain. Never while a card is waiting
+  // (his message may change it). If it isn't sure, fails or is slow, the brain reads the message as before.
+  contextNow()
+  if (triage(message, { cardOpen: !!card, forceQuestion: opts.forceQuestion, botAsked: botAsked(history) }) === 'router') {
+    const r = await route({ message, transcript: transcript(history.slice(-4), 240), today }, (model, usage) => recordUsage(sb, 'chat', model, usage))
+    if (r?.route === 'chat') {
+      markPath('quick')
+      await say(sb, chatId, esc(r.reply), undefined, { intent: 'chat' })
+      return 'chat'
+    }
+    if (r?.route === 'list') {
+      markPath('quick')
+      const shown = await renderAny(sb, await contextNow().data, r.show)
+      await say(sb, chatId, shown.html, shown.buttons, { intent: 'question', refs: shown.refs })
+      return 'question'
+    }
+    if (r?.route === 'new') {
+      markPath('quick')
+      await newCard(sb, chatId, r.itemText)
+      return 'new'
+    }
+  }
+
+  markPath('brain')
+  const parts = contextNow()
+  const [ctx, data, weekPlan] = await Promise.all([parts.ctx, parts.data, parts.week])
+  // a change is likely: its card's knock-on needs the week, so read it while the AI thinks
+  if (looksLikeChange(message) || card?.kind === 'action') void worldOf(sb, data)
   const res = await think(
     {
       now: ctx.snapshot.split('\n', 1)[0], transcript: transcript(history), card: card ? cardForAI(card) : null,
@@ -139,10 +229,9 @@ export async function converse(sb: SupabaseClient, chatId: number, turn: TurnRow
     case 'instruction':
       return proposeChanges(sb, chatId, message, d, ctx, history, null, data)
     case 'app_idea':
-      await saveIdea(sb, chatId, d.idea!, message)
+      await saveIdea(sb, chatId, d.idea!, message, d.needs ?? '')
       return 'app_idea'
     case 'plan':
-      await typing(chatId)
       if (d.plan!.training === 'note') await noteWeek(sb, chatId, message, data)
       else if (d.plan!.training?.length) await proposeTrainingPlan(sb, chatId, message, d.plan!.training, data)
       else if (d.plan!.week) await proposeWeekPlan(sb, chatId, message, ctx, data)
@@ -178,7 +267,7 @@ async function proposeChanges(sb: SupabaseClient, chatId: number, message: strin
   }
   if (!actions.length) {
     // a change it has no way to make: say so and keep it for Claude Code (standing rule, CLAUDE.md)
-    if (!problems.length && !d.actions.length) { await saveIdea(sb, chatId, message, message); return 'app_idea' }
+    if (!problems.length && !d.actions.length) { await saveIdea(sb, chatId, message, message, d.needs || d.reply); return 'app_idea' }
     await say(sb, chatId, `${esc(d.reply || 'Which one do you mean?')}\n<i>Nothing to change: ${esc(problems.join('; '))}.</i>`, undefined, { intent: 'instruction' })
     return 'instruction'
   }
@@ -192,11 +281,13 @@ async function proposeChanges(sb: SupabaseClient, chatId: number, message: strin
  * refs are its own) and shown on the usual card; if none of them survive the checks, the brain reads the message instead.
  */
 async function useFast(sb: SupabaseClient, chatId: number, message: string, r: FastResult): Promise<Outcome | null> {
-  if (r.kind === 'handled') return 'question'
+  if (r.kind === 'handled') return r.intent ?? 'question'   // the plug-in replied itself (and says what it was)
   if (r.kind === 'answer') { await say(sb, chatId, r.html, r.buttons, { intent: 'question' }); return 'question' }
-  if (r.kind === 'idea') { await saveIdea(sb, chatId, r.request, message); return 'app_idea' }
+  if (r.kind === 'idea') { await saveIdea(sb, chatId, r.request, message); return 'app_idea' }   // (a fast path knows what, not what's needed)
   const today = todayISO()
-  const ctx: PlannerContext = { today, weekStart: weekStartISO(today), snapshot: '', refs: new Map() }
+  // the records its actions name, if it gave any ("E1" → that event): built-in ops can then find them like the brain's
+  const refs = new Map((r.refs ?? []).map(([key, ref]) => [key.trim().toUpperCase(), ref] as const)) as unknown as PlannerContext['refs']
+  const ctx: PlannerContext = { today, weekStart: weekStartISO(today), snapshot: '', refs }
   const raw = r.actions.map((a) => ({ op: a.op, ref: a.ref ?? '', value: a.value ?? '', date: a.date ?? '', date_to: a.date_to ?? '', time: a.time ?? '', time_to: a.time_to ?? '', number: a.number ?? 0, words: a.words ?? '' }))
   const rows = await loadRows(sb, raw, ctx)
   const { actions, problems } = checkActions(raw, ctx, rows, message, today)
@@ -223,7 +314,7 @@ async function answer(sb: SupabaseClient, chatId: number, question: string, a: A
     if (!error && data) {
       pendingId = data.id
       lines.push('', `Save as a fact about you? “${esc(a.fact_to_save)}”`)
-      buttons = [[{ text: '💾 Save fact', callback_data: `f:${data.id}` }, { text: '✖ No', callback_data: `x:${data.id}` }]]
+      buttons = [[{ text: '💾 Save fact', callback_data: `f:${data.id}` }, { text: '❌ No', callback_data: `x:${data.id}` }]]
     }
   }
   const refs: Ref[] = [...a.plan.map((p) => ({ kind: p.kind, id: p.id, title: p.title })), ...(list?.refs ?? [])]
@@ -235,6 +326,7 @@ async function answer(sb: SupabaseClient, chatId: number, question: string, a: A
  * version; questions wait; anything else is sorted into a card as before (the cheap sorter still runs).
  */
 export async function simpleMode(sb: SupabaseClient, chatId: number, message: string, card: Pending | null, why: string): Promise<Outcome> {
+  markPath('simple')
   if (looksLikeMeta(message)) {
     await say(sb, chatId, `${why}, so I can only take new things right now. Nothing saved.`, card?.status === 'editing' ? editButtons(card.id) : undefined, { intent: 'chat' })
     return 'chat'

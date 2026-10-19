@@ -12,11 +12,18 @@ const pad = (n: number) => String(n).padStart(2, '0')
 
 type Parts = { y: number; m: number; d: number; hh: number; mm: number }
 
+// One formatter per timezone (making one is slow, and the planners call this thousands of times)
+const formats = new Map<string, Intl.DateTimeFormat>()
+
 export function zonedParts(date: Date, tz = DEFAULT_TZ): Parts {
-  const f = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  })
+  let f = formats.get(tz)
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    })
+    formats.set(tz, f)
+  }
   const p: Record<string, string> = {}
   for (const x of f.formatToParts(date)) p[x.type] = x.value
   return { y: +p.year, m: +p.month, d: +p.day, hh: +p.hour, mm: +p.minute }
@@ -42,10 +49,19 @@ function toUTC(iso: string): Date {
   return new Date(Date.UTC(y, m - 1, d))
 }
 
+// addDays is pure and called in tight loops by the planners: remember the answers (bounded)
+const added = new Map<string, string>()
+
 export function addDays(iso: string, n: number): string {
+  const key = `${iso}|${n}`
+  const known = added.get(key)
+  if (known !== undefined) return known
   const dt = toUTC(iso)
   dt.setUTCDate(dt.getUTCDate() + n)
-  return dt.toISOString().slice(0, 10)
+  const out = dt.toISOString().slice(0, 10)
+  if (added.size >= 20_000) added.clear()
+  added.set(key, out)
+  return out
 }
 
 /** ISO weekday: 1 = Mon ... 7 = Sun */
