@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getSupabase } from '@/lib/supabase/client'
 import { completeTask, undoComplete, getUserId, loadLookupRows, loadOpenTasks, rows } from '@/lib/data'
 import { makeLookup } from '@/lib/lookup'
@@ -12,6 +12,7 @@ import CaptureBox from '../CaptureBox'
 import TaskForm from '../TaskForm'
 import { ErrorBox, Loading, useLoad, useToast } from '../ui'
 import TodayCard from './TodayCard'
+import TodayView from './TodayView'
 import UpcomingCard from './UpcomingCard'
 import WeekCard from './WeekCard'
 import CalendarCard from './CalendarCard'
@@ -104,6 +105,10 @@ export default function HomeView() {
   const now = useNow()
   const [editing, setEditing] = useState<Task | null>(null)
   const [checkin, setCheckin] = useState(false)
+  const [more, setMoreState] = useState(false)
+  // whether "Everything else" is open: remembered on this device only (a convenience; works without storage)
+  useEffect(() => { try { setMoreState(localStorage.getItem('home:more') === '1') } catch { /* private window */ } }, [])
+  const setMore = (v: boolean) => { setMoreState(v); try { localStorage.setItem('home:more', v ? '1' : '0') } catch { /* fine */ } }
 
   const hour = now ? zonedParts(now).hh : 12
   const name = data?.profile?.display_name ?? ''
@@ -134,39 +139,50 @@ export default function HomeView() {
           <div className="lbl" style={{ marginTop: 10 }}>{longDate(todayISO())}</div>
         </div>
         <div className="clock">
-          <div className="time mono">{now ? timeOf(now) : ' '}</div>
+          <div className="time mono">{now ? timeOf(now) : ' '}</div>
           <div className="lbl">London · {now ? tzAbbrev() : ''}</div>
         </div>
         <CaptureBox onSaved={() => reload()} />
       </section>
 
-      <RemindersLine toast={toast.show} />
+      {/* Item 5: Today first (≤ 5 things, one tap each); everything else is one tap away */}
+      <TodayView toast={toast.show} onChanged={() => { reload() }} />
+      <div className="s4 col"><RemindersLine toast={toast.show} /></div>
 
-      {error && <div className="s12"><ErrorBox message={error} onRetry={reload} /></div>}
+      <div className="s12 morebar">
+        <button className="btn" aria-expanded={more} aria-controls="home-more" onClick={() => setMore(!more)}>
+          {more ? 'Hide the rest' : 'Everything else'}<span className="chev" aria-hidden="true">{more ? '▴' : '▾'}</span>
+        </button>
+        {!more && <span className="lbl morehint">To do · coming up · goals · study · recovery · week · calendar · ask AI</span>}
+      </div>
 
-      {!data && loading && (
-        <>
-          <section className="card s7"><Loading lines={5} /></section>
-          <section className="card s5"><Loading lines={5} /></section>
-        </>
-      )}
+      {more && <div id="home-more" className="s12 grid">
+        {error && <div className="s12"><ErrorBox message={error} onRetry={reload} /></div>}
 
-      {data && (
-        <>
-          <TodayCard data={data} onComplete={complete} onEdit={setEditing} />
-          <div className="s5 col">
-            <UpcomingCard data={data} />
-            <GoalsCard data={data} reload={reload} toast={toast.show} onComplete={complete} />
-            <StudyCard data={data} reload={reload} toast={toast.show} />
-            <RecoveryCard data={data} />
-            <InsightsCard toast={toast.show} reloadHome={reload} />
-            <WeekCard data={data} reload={reload} toast={toast.show} />
-            <RoutinesLink data={data} />
-          </div>
-          <CalendarCard data={data} now={now} reload={reload} toast={toast.show} />
-          <AskCard reload={reload} toast={toast.show} onCheckin={() => setCheckin(true)} checkinDay={isoDow(data.today) === checkinDow(data.planning)} />
-        </>
-      )}
+        {!data && loading && (
+          <>
+            <section className="card s7"><Loading lines={5} /></section>
+            <section className="card s5"><Loading lines={5} /></section>
+          </>
+        )}
+
+        {data && (
+          <>
+            <TodayCard data={data} onComplete={complete} onEdit={setEditing} />
+            <div className="s5 col">
+              <UpcomingCard data={data} />
+              <GoalsCard data={data} reload={reload} toast={toast.show} onComplete={complete} />
+              <StudyCard data={data} reload={reload} toast={toast.show} />
+              <RecoveryCard data={data} />
+              <InsightsCard toast={toast.show} reloadHome={reload} />
+              <WeekCard data={data} reload={reload} toast={toast.show} />
+              <RoutinesLink data={data} />
+            </div>
+            <CalendarCard data={data} now={now} reload={reload} toast={toast.show} />
+            <AskCard reload={reload} toast={toast.show} onCheckin={() => setCheckin(true)} checkinDay={isoDow(data.today) === checkinDow(data.planning)} />
+          </>
+        )}
+      </div>}
 
       {editing && data && (
         <TaskForm task={editing} lookup={data.lookup} onClose={() => setEditing(null)}

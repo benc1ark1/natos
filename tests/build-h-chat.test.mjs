@@ -25,12 +25,17 @@ const tick = async (hhmm) => {
 }
 
 test('settings: the brief time is his (by chat, with Undo); the tick follows it', { skip }, async () => {
-  await ask('send the brief at 7:30', [{ value: 'briefAt=7:30am' }])
-  assert.match(last().text, /⚙️ Morning brief: 07:00 → <b>07:30<\/b>/)
+  // (item 5: the morning message is at 07:30 by default, on holidays not before his holiday wake time: none here)
+  await q(`update profiles set planning = '{"holidays": "none"}' where user_id = $1`, [chat.users.owner])
+  await ask('send the brief at 8:15', [{ value: 'briefAt=8:15am' }])
+  assert.match(last().text, /⚙️ Morning message: 07:30 → <b>08:15<\/b>/)
   await tap('Apply')
-  assert.equal((await planning()).briefAt, '07:30')
-  assert.equal((await tick('07:10')).sent.some((k) => k.startsWith('brief:')), false, 'not at the old time')
-  assert.ok((await tick('07:35')).sent.some((k) => k.startsWith('brief:')), 'at his time')
+  assert.equal((await planning()).briefAt, '08:15')
+  const briefed = async () => (await q(`select count(*)::int n from telegram_sent where key = $1`, [`brief:${chat.time.todayISO()}`]))[0].n
+  await tick('07:35')
+  assert.equal(await briefed(), 0, 'not at the old time')
+  await tick('08:20')
+  assert.equal(await briefed(), 1, 'at his time')
   await tap('Undo')
   assert.equal((await planning()).briefAt, undefined, 'back to the default')
 })

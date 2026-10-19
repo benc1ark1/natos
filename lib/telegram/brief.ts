@@ -1,4 +1,4 @@
-// Server-only: the 07:00 morning brief and the "You forgot this" nudges, built from Nat's data by rules
+// Server-only: the morning brief (item 5: now the Today list, lib/today) and the "You forgot this" nudges, built from Nat's data by rules
 // (no AI, so they're instant and can't invent anything). Read-only.
 import 'server-only'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -11,6 +11,7 @@ import { addDays, dowShort, longDate, minutesOf, shortDate, weekStartISO } from 
 const PDOT = { rest: '⚪', low: '🟢', med: '🟡', high: '🔴' } as const
 import type { EventException, EventRow, Task, TargetLog, WeeklyTarget } from '../types'
 import { esc } from './api'
+import { release } from './sent'
 import { loadPlan, type PlanRow } from '../plan'
 import { leaveBy, withTravel } from '../travel'
 import { loadTravel } from '../travel-data'
@@ -113,8 +114,24 @@ export function tickButtons(blocks: DayBlock[], tasks: Task[], today: string): B
 
 export type Brief = { html: string; buttons?: Button[][] }
 
-/** The 07:00 morning brief: the day in time order (routine, school, study, training with place + leave-by, routine), ticks. */
-export async function buildBrief(sb: SupabaseClient, d: DayData, now: Date, appUrl: string | null, opts: { note?: string | null } = {}): Promise<Brief> {
+/**
+ * Item 5: the morning brief is now Today (lib/today: at most 5 things, each with what to open and a tap, plus one line
+ * of fixed commitments), sent once by the Today plug-in at 07:30 (on holidays at his holiday wake time) as the pinned
+ * Today, so there's one morning message. Called by the 5-minute tick (it passes `note`) this sends nothing; called by
+ * /brief it's the Today list. The old full brief (the whole day, don't-forget, targets…) is buildFullBrief (/brief full).
+ */
+export async function buildBrief(sb: SupabaseClient, d: DayData, now: Date, appUrl: string | null, opts: { note?: string | null; scheduled?: boolean } = {}): Promise<Brief> {
+  if (opts.scheduled ?? opts.note !== undefined) {
+    if (opts.note) await release(sb, 'sql-reminder:build-o')   // the morning message says it instead (lib/today/send.ts)
+    return { html: '' }
+  }
+  const { todayMessage } = await import('../today/send')
+  return todayMessage(sb, { now })
+}
+
+/** The full day brief (before item 5 this was the 07:00 brief): the day in time order (routine, school, study, training
+ *  with place + leave-by, routine), don't-forget, targets, reminders, ticks. Now on /brief full. */
+export async function buildFullBrief(sb: SupabaseClient, d: DayData, now: Date, appUrl: string | null, opts: { note?: string | null } = {}): Promise<Brief> {
   const lines: string[] = [`☀️ <b>${esc(longDate(d.today))}</b>`]
   // Whoop (if connected): this morning's recovery and last night's sleep; low recovery = a lighter day
   const w = await whoopDay(sb, d.today)

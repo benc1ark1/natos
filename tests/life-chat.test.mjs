@@ -93,8 +93,8 @@ test('"dinner tonight 8": ✅ → today’s brief shows it, and the rest of toda
   await nat('dinner tonight 8')
   assert.match(last().text, new RegExp(`<b>Dinner</b> ${day(D(0))} 20:00–22:00`))
   await tap('Apply')
-  await nat('/brief')
-  assert.match(last().text, /20:00[^\n]*Dinner/)
+  await nat('/brief')   // since item 5 the brief is the pinned Today (📌); its fixed line lists the day's events
+  assert.match(chat.tg.sent().at(-1).text, /Dinner 20:00|20:00[^\n]*Dinner/)
   await nat('/free today')
   assert.match(last().text, /Busy: [^\n]*Dinner 20:00–22:00/)
   assert.doesNotMatch(last().text, /• 2[01]:/, 'no free time inside dinner')

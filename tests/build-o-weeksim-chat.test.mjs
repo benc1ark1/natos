@@ -1,8 +1,8 @@
 // Build O, part 15: the whole system for a full, realistic week, end to end through the bot on the TEST database (a
 // scripted AI, a fake Telegram, the clock moved to last week). Monday's first brief brings the gap questions (answered),
-// the clean-up card, Owen's days and Your week (✅); then every day's 07:00 brief and pinned Today, ticks, a cancelled
+// the clean-up card, Owen's days and Your week (✅); then every day's 07:30 morning message (= the pinned Today), ticks, a cancelled
 // football session, new homework from Classroom, a teacher email, a low-Whoop morning, "game moved to Saturday", a time
-// saving applied, the 21:00 wrap-ups, the Owen days question, and Sunday's reset card for the next week.
+// saving applied, the 21:00 evening messages, the Owen days question, and Sunday's reset card for the next week.
 // After every step: nothing double-booked, load sensible, messages fit a phone, nothing broke.
 // SIM_OUT=qa/WEEK-SIM-transcript.md writes the whole conversation out.
 // Run: node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs --test tests/build-o-weeksim-chat.test.mjs
@@ -100,19 +100,21 @@ test('O15: a whole week through the bot, Monday’s first brief to Sunday’s re
   const smc = await add('tasks', { title: 'SMC past paper', status: 'this_week', importance: 'must', due_at: `${D(4)}T12:00:00Z`, duration_minutes: 60 })
   await add('goals', { title: 'Physics mock', kind: 'test', target_date: D(3), subject_id: phys, priority: 'high' })
   await q(`delete from telegram_sent where key like 'onboard:%' or key = 'gaps:paused'`)
+  // (item 5: a school week, not the default half-term guess, so every morning message is at 07:30)
+  await q(`update profiles set planning = '{"holidays": "none"}' where user_id = $1`, [chat.users.owner])
 
-  // =============== Monday 07:00: the first brief, then the questions, the clean-up, Owen, Your week
-  await setAt(D(0), '07:00')
+  // =============== Monday 07:30: the first morning message, then the questions, the clean-up, Owen, Your week
+  await setAt(D(0), '07:30')
   chat.ai.script(PLAN, (body) => ({ days: [
     { date: D(0), items: [{ ref: refIn(body, /(T\d+) \| Physics homework/), title: '', minutes: 45, kind: 'focus', focus: '', why: 'due Wed' }] },
     { date: D(1), items: [{ ref: refIn(body, /(T\d+) \| SMC past paper/), title: '', minutes: 60, kind: 'focus', focus: '', why: 'due Fri' }] },
     { date: D(2), items: [{ ref: refIn(body, /(G\d+) \| TEST: Physics mock/), title: '', minutes: 40, kind: 'focus', focus: 'forces', why: 'mock Thu' }] },
   ], note: 'Homework first, mock prep Wednesday.', push_back: '' }))
-  await tick('Mon 07:00')
-  await setAt(D(0), '07:05')
-  await tick('Mon 07:05')   // the week card comes on its own tick
-  const brief = sent().find((m) => m.text.startsWith('☀️'))
-  assert.match(brief.text, /📋 <b>Your day<\/b>/)
+  await tick('Mon 07:30')
+  await setAt(D(0), '07:35')
+  await tick('Mon 07:35')   // the week card comes on its own tick
+  const brief = sent().find((m) => m.text.startsWith('📌 <b>Today'))
+  assert.match(brief.text, new RegExp(`📌 <b>Today · ${T().longDate(D(0))}</b>`))
   assert.ok(lastOf(/🧹 <b>Calendar clean-up<\/b>/) && lastOf(/🗓 <b>Days to give Owen<\/b>/) && lastOf(/🗓 <b>Your week<\/b>/), 'the morning queue')
   chat.noSurprises()
 
@@ -158,7 +160,7 @@ test('O15: a whole week through the bot, Monday’s first brief to Sunday’s re
   assert.deepEqual(p1.ignoredSessions, ['EFA training'])
   assert.ok(p1.owenDays?.speed?.length, 'Owen’s days saved')
 
-  // =============== each day: brief, ticks, the day's event, 21:00 wrap-up
+  // =============== each day: the morning message, ticks, the day's event, the 21:00 evening message
   const blocksOn = (d) => q(`select id, title, kind, start_time::text s, status from plan_blocks where on_date = $1 and status in ('planned','done') order by start_time`, [d])
   const tickDone = async (d, filter) => {
     const pin = sent().filter((m) => m.text.startsWith('📌')).at(-1)
@@ -176,17 +178,17 @@ test('O15: a whole week through the bot, Monday’s first brief to Sunday’s re
       await add('whoop_days', { on_date: d, recovery: 25, sleep_minutes: 380 })
       low = lowDone = true
     }
-    if (i > 0) { await setAt(d, '07:00'); await tick(`${day[i]} 07:00`) }
+    if (i > 0) { await setAt(d, '07:30'); await tick(`${day[i]} 07:30`) }
     if (low) {
-      assert.match(sent().filter((m) => m.text.startsWith('☀️')).at(-1).text, /🔴 .*25%[\s\S]*Low recovery: lighter training today/)
+      assert.match(sent().filter((m) => m.text.startsWith('📌 <b>Today')).at(-1).text, /🔴 Whoop recovery 25%: a lighter day/)
       const card = lastOf(/↪️ <b>Re-planned for your 25% recovery<\/b>/)
       assert.ok(card, `${day[i]}: a card to move today’s hard session`)
       await tapOn(card, '✅ Move')
       collect(`${day[i]} 07:01 low Whoop`)
       await noDoubleBooking('after the low-Whoop move')
     }
-    const b = sent().filter((m) => m.text.startsWith('☀️')).at(-1)
-    assert.match(b.text, new RegExp(`☀️ <b>${T().longDate(d)}</b>`), `${day[i]}: the brief`)
+    const b = sent().filter((m) => m.text.startsWith('📌 <b>Today')).at(-1)
+    assert.match(b.text, new RegExp(`📌 <b>Today · ${T().longDate(d)}</b>`), `${day[i]}: the morning message`)
 
     if (i === 1) {
       // Tuesday: football cancelled tomorrow (his own session now), and new homework from Classroom
@@ -256,8 +258,8 @@ test('O15: a whole week through the bot, Monday’s first brief to Sunday’s re
     await tickDone(d, (x) => x.kind === 'training')
     await setAt(d, '21:05')
     await tick(`${day[i]} 21:05`)
-    const wrap = lastOf(/🌙 <b>Today, wrapped up<\/b>/)
-    if (wrap && log.at(-1)?.text === wrap.text && chat.button(wrap, '✅ Move')) { await tapOn(wrap, '✅ Move'); collect(`${day[i]} 21:06 move`) }
+    // the evening message: a tap per item; what isn't ticked rolls on by itself (no card to answer)
+    assert.ok(lastOf(/^🌙 <b>(Tap what you did today|All \d+ done today)/), `${day[i]}: the evening message`)
     await noDoubleBooking(`${day[i]} night`)
   }
 

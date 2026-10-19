@@ -1,6 +1,6 @@
 // Jarvis phase B2: the pinned "Today" message, against the fake Telegram and the TEST database.
 // It must: start after a ✅, be edited in place (never re-sent) when something changes, stay still when
-// nothing did, start fresh each day from 07:00 (old one unpinned, never deleted), survive being deleted,
+// nothing did, start fresh each day from the morning message, 07:30 (old one unpinned, never deleted), survive being deleted,
 // and never be sent twice when two updates race. Run: npm run test:chat
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -30,7 +30,7 @@ test('a ✅ starts the pinned Today message; the next ✅ edits it in place', { 
   const s1 = await state()
   assert.equal(s1.id, pins[0].body.message_id)
   assert.equal(s1.date, chat.time.todayISO())
-  assert.match(pinnedTexts()[0].text, /<b>Physics homework<\/b>/)
+  assert.match(pinnedTexts()[0].text, /📌 Physics homework/)   // (item 5: the pinned Today is the Today list)
 
   await saveTask('Maths sheet')
   const edits = chat.tg.of('editMessageText')
@@ -49,15 +49,18 @@ test('nothing changed: no edit; /pin says it is up to date', { skip }, async () 
   assert.match(last().text, /up to date/)
 })
 
-test('a new day: a fresh message from 07:00 (the tick waits before that); yesterday’s unpinned, never deleted', { skip }, async () => {
+test('a new day: a fresh message from 07:30 (the tick waits before that); yesterday’s unpinned, never deleted', { skip }, async () => {
   await saveTask('Physics homework')
   const old = (await state()).id
   await q(`update telegram_state set today_date = today_date - 1`)
   chat.tg.clear()
   const today = chat.time.todayISO()
-  assert.equal(await refresh(new Date(chat.time.zonedToUTC(today, '06:00')), { startAfter: '07:00' }), 'waiting')
-  assert.equal(chat.tg.calls.length, 0, 'nothing before 07:00')
-  assert.equal(await refresh(new Date(chat.time.zonedToUTC(today, '07:05')), { startAfter: '07:00' }), 'sent')
+  // (item 5: the tick's new day starts with the morning message, 07:30 by default; on holidays later: none here)
+  await q(`update profiles set planning = '{"holidays": "none"}' where user_id = $1`, [chat.users.owner])
+  assert.equal(await refresh(new Date(chat.time.zonedToUTC(today, '06:00')), { startAfter: '07:30' }), 'waiting')
+  assert.equal(await refresh(new Date(chat.time.zonedToUTC(today, '07:25')), { startAfter: '07:00' }), 'waiting')
+  assert.equal(chat.tg.calls.length, 0, 'nothing before 07:30')
+  assert.equal(await refresh(new Date(chat.time.zonedToUTC(today, '07:35')), { startAfter: '07:30' }), 'sent')
   assert.equal(chat.tg.of('sendMessage').length, 1)
   assert.equal(chat.tg.of('pinChatMessage').length, 1)
   assert.deepEqual(chat.tg.of('unpinChatMessage').map((c) => c.body.message_id), [old])

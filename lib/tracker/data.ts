@@ -122,7 +122,7 @@ export async function loadTrackerData(sb: SupabaseClient, today: string): Promis
     optional(() => sb.from('programmes').select('id,name,area,subject_id,per_week,minutes,days,starts_on,ends_on,status,paused_until,mode,notes,sort_order').is('archived_at', null).order('sort_order')),
     optional(() => sb.from('programme_items').select('id,programme_id,position,title,details,url,minutes,status,done_on,result,score,out_of').is('archived_at', null).order('position')),
     optional(() => sb.from('plan_rules').select('id,words,kind,target,minutes,starts_on,ends_on').is('archived_at', null).order('ends_on')),
-    firstOf(() => sb.from('tasks').select('id,title,subject_id,due_at,duration_minutes,origin,source,external_id,status,is_system,archived_at').is('archived_at', null).neq('status', 'completed')),
+    firstOf(() => sb.from('tasks').select('id,title,subject_id,due_at,duration_minutes,details,origin,source,external_id,status,is_system,archived_at').is('archived_at', null).neq('status', 'completed')),
     sb.from('profiles').select('planning').maybeSingle(),
     optional(() => sb.from('plan_blocks').select('pick_key').eq('on_date', today).eq('status', 'done').not('pick_key', 'is', null)),
   ])
@@ -190,7 +190,7 @@ export async function loadTrackerData(sb: SupabaseClient, today: string): Promis
 
   const homework: HomeworkTask[] = tasks.rows.filter(isHomework).map((r) => ({
     id: r.id as string, title: r.title as string, subjectId: s(r.subject_id), subject: r.subject_id ? canonical(subjectName.get(r.subject_id as string) ?? null) : null,
-    dueAt: s(r.due_at), minutes: n(r.duration_minutes),
+    dueAt: s(r.due_at), minutes: n(r.duration_minutes), details: s(r.details),
   })).sort((a, b) => (a.dueAt ?? '9999').localeCompare(b.dueAt ?? '9999'))
 
   const values = moreSettings(prof.data?.planning ?? null) as unknown as Record<string, string | number>

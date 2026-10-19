@@ -73,6 +73,8 @@ test('fix 2: what the bot can’t do is said plainly and kept in App ideas; recu
 
 test('fix 3: a new or renamed session/target is asked its training type once; the name’s guess is only a suggestion', { skip }, async () => {
   await q(`delete from telegram_sent where key = 'onboard:gaps'`)   // Build O: the older type question runs until the first gap round
+  // (item 5: the morning message's window — which starts the first gap round — ends before these 10:00 ticks)
+  await q(`update profiles set planning = '{"holidays": "none", "briefAt": "07:00"}' where user_id = $1`, [chat.users.owner])
   const tick = async (hhmm) => {
     const { runTick } = await import('../lib/telegram/tick.ts')
     const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')
@@ -114,6 +116,8 @@ test('fix 3: a new or renamed session/target is asked its training type once; th
 
 test('final polish: Google copies of one session are asked about once by name; the answer covers every copy, and new copies inherit it', { skip }, async () => {
   await q(`delete from telegram_sent where key = 'onboard:gaps'`)   // Build O: the older type question runs until the first gap round
+  // (item 5: the morning message's window — which starts the first gap round — ends before these 10:00 ticks)
+  await q(`update profiles set planning = '{"holidays": "none", "briefAt": "07:00"}' where user_id = $1`, [chat.users.owner])
   const tick = async (hhmm) => {
     const { runTick } = await import('../lib/telegram/tick.ts')
     const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')

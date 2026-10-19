@@ -15,9 +15,9 @@ import { mightBeTracker, parseFast } from '../../tracker/bot-fast'
 import { mathsView, nextLine, physicsView, programmesView, reviewView, rulesView, snapshotSections, testsView, whatNextText } from '../../tracker/bot-views'
 import { trackerCsvAll } from '../../tracker/csv'
 import { classroomTick } from '../../tracker/classroom'
-import { loadStudyWorld, loadTrackerData } from '../../tracker/data'
-import { planStudyDay } from '../../tracker/engine'
-import { isoDow, shortDate } from '../../time'
+import { loadTrackerData } from '../../tracker/data'
+import type { Pick as PlanPick } from '../../plan-items'
+import { shortDate } from '../../time'
 
 const PROMPT = `- Study tracker (see "Study tracker topics"; topic refs are their codes like PC1-03 (TP… for topics without one), tests TS…, mistakes MK…, programmes PG…, rules RL…; value "key=value; …"; prefer these over topic_status for tracker topics): trk_colour (ref topic; "colour=green|yellow|red|white") · trk_log (work he did on a topic: ref topic; "what=textbook|exercise|mixed|bicen|integral|stretch|booklet|pmt|review|diagnostic; score=8; out_of=10" (only if he gave a score; "pct=80" for a %), "notes=yes" if he used notes; the app sets the colour, step and review) · trk_mistake (ref topic or ""; "question=Q3b; what=<what went wrong, his words>; kind=knowledge|method|algebra|misread|calculator|time|careless; rule=<rule for next time>; test=TS…; source=<book / sheet>") · trk_redo (ref MK…; "result=right|wrong") · trk_attempt (a score on a test or paper: ref TS…; "what=diagnostic|booklet|timed|paper|real|other; score=38; out_of=45; label=<his words>"; date + words only if it wasn't today) · trk_test (a new test: ref "", "title=…; kind=test|consolidation|paper|mock; subject=Further Maths; topics=PC1-01, PC1-02; info=…; limits=no momentum; length=50; marks=45; per_day=30-60", date = its day + words = his words; ref TS… to change one: only the fields that change) · trk_topic (ref topic; "teacher=…", "strand=…", "taught=yes|in_class|not_yet", "taught_from=YYYY-MM-DD" + words, "notes=…", "concepts=…", "booklet=done|doing|todo", "pmt=done|doing|todo", "bicen=<section>", "integral=<link>", "name=…") · trk_programme (ref "" + "do=new; name=…; items=A | B | C; per_week=1; days=weekend; minutes=60; mode=in_order|gaps_only|optional" (date + words for an end date); or ref PG… + "do=pause" (date + words = until when, if he said), "do=resume", "do=stop", "do=add; add=D | E", or "do=change; per_week=2" / "days=…" / "minutes=…" / "ends=YYYY-MM-DD" + words) · trk_item (an item of a programme: ref PG…; "do=done|skip|result; item=3 (its number; "" = the next one); result=solved with hints · idea: …; score=…; out_of=…") · trk_rule (a temporary rule: "do=add; kind=boost (top priority)|pause|cap (minutes a day)|note; target=act|ahead (getting ahead)|stretch|reviews|mistakes (redos)|tests|fix|old|physics|subject:<name>|subjects:Maths,Further Maths,Physics|programme:<name>|topic:<code>; minutes=45 (cap)", date = the last day it counts ("this week" = this Sunday) + words = his words, or "ends=until_i_say" in value for "until I say"; if he gave no end, put it in ask with options This week ("ends=week"), 2 weeks ("ends=2weeks"), Until I say ("ends=until_i_say"); ref RL… + "do=end" to end one). "maths" = Maths + Further Maths.`
 
@@ -36,13 +36,21 @@ async function recentTexts(sb: SupabaseClient): Promise<string[]> {
   return ((data ?? []) as { text: string }[]).map((r) => r.text)
 }
 
-/** "what next?": the planner's top pick not done yet (null when it has nothing: then the brain answers as before). */
+/**
+ * "what next?": the first thing on Today not done yet (lib/today: the same list as the morning message, with his
+ * holidays, his real free time, ACT and training), exactly what to open; null when Today has nothing left (then the
+ * brain answers as before).
+ */
 async function whatNext(sb: SupabaseClient, today: string, d: TrackerData): Promise<string | null> {
-  const world = await loadStudyWorld(sb, today)
-  // TODO(lead, item 5): use lib/today's DayContext (holidays → half_term, his real free minutes) once it lands
-  const plan = planStudyDay(world, { date: today, dow: isoDow(today), mode: 'school', studyMinutes: 120, maxPicks: 5 })
-  const left = plan.picks.filter((p) => !world.doneToday.includes(p.key))
-  return left.length ? whatNextText(left[0], left.slice(1), d) : null
+  const { loadToday } = await import('../../today/load')
+  const plan = (await loadToday(sb, { date: today })).plan
+  const left = plan.items.filter((it) => !it.isDone)
+  const pick = (it: (typeof left)[number]): PlanPick => ({
+    key: it.key, kind: it.kind === 'training' ? 'training' : it.kind === 'task' ? 'task' : /:review$/.test(it.key) ? 'review' : 'fix',
+    tier: 1, subject: it.subject, title: `${it.at ? `${it.at} ` : ''}${it.title}`, open: it.open || (it.kind === 'training' ? 'your session' : 'see Today'),
+    url: it.url, minutes: it.minutes, why: it.why, done: it.done, topicId: it.topicId, goalId: it.goalId, taskId: it.taskId, programmeItemId: it.programmeItemId,
+  })
+  return left.length ? whatNextText(pick(left[0]), left.slice(1).map(pick), d) : null
 }
 
 /** "export my tracker": every tab in one CSV (lib/tracker/csv.ts, the same as the Subjects page's export) as a document. */

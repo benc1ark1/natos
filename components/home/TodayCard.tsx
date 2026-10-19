@@ -15,9 +15,9 @@ export default function TodayCard({ data, onComplete, onEdit }: {
   const nice = items.filter((t) => !isDue(t))
 
   return (
-    <section className="card s7" aria-labelledby="today-h">
+    <section className="card s7" aria-labelledby="todo-h">
       <div className="ch">
-        <span className="lbl" id="today-h"><span className="n">01 //</span> Today</span>
+        <span className="lbl" id="todo-h"><span className="n">01 //</span> To do</span>
         <span className="lbl">{due.length} due · {nice.length} nice</span>
       </div>
       {data.plan.length > 0 && (

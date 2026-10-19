@@ -397,18 +397,18 @@ test('/rules and /tests with nothing in them say how to add one', { skip }, asyn
   chat.noSurprises()
 })
 
-test('"what next?": the planner’s top pick with exactly what to open (until the planner has picks, the brain answers)', { skip }, async () => {
+test('"what next?": the first thing on Today not done yet, with exactly what to open (nothing left: the brain answers)', { skip }, async () => {
   await seed(chat)
-  const { loadStudyWorld } = await import('../lib/tracker/data.ts')
-  const { planStudyDay } = await import('../lib/tracker/engine.ts')
+  // (item 5: "what next?" reads Today — the same list as the morning message — so holidays, free time and ACT count)
+  const { loadToday } = await import('../lib/today/load.ts')
   const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')
-  const world = await loadStudyWorld(await openOwnerSession(), today())
-  const picks = planStudyDay(world, { date: today(), dow: T().isoDow(today()), mode: 'school', studyMinutes: 120 }).picks
-  if (!picks.length) chat.ai.script(CHAT, brain({ intent: 'question', reply: 'Matrices: Bicen questions.' }))
+  const left = (await loadToday(await openOwnerSession())).plan.items.filter((i) => !i.isDone)
+  if (!left.length) chat.ai.script(CHAT, brain({ intent: 'question', reply: 'Matrices: Bicen questions.' }))
   await nat('what next?')
-  if (picks.length) {
+  if (left.length) {
     noAI()
-    assert.match(last().text, new RegExp(`^👉 <b>${picks[0].title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/&/g, '&amp;')}</b>`))
+    const title = `${left[0].at ? `${left[0].at} ` : ''}${left[0].title}`
+    assert.ok(last().text.startsWith(`👉 <b>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</b>`), last().text)
     assert.match(last().text, /📖 /)
   } else assert.match(last().text, /Matrices: Bicen questions\./)
   chat.noSurprises()
