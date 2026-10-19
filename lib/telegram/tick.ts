@@ -29,7 +29,7 @@ import { morningAt } from '../today/holidays'
 import { weeklyCheckOn } from '../weekly/settings'
 import { checkCoversNudge } from './plugins/weekly'
 
-// The brief, the nudge, the check-in day and the "leave in …" lead are his settings (lib/settings.ts: briefAt 07:00,
+// The brief, the nudge, the check-in day and the "leave in …" lead are his settings (lib/settings.ts: briefAt 07:30,
 // nudgeAt 18:00, checkinDay Sunday, leaveAlertMin 10 unless he changes them).
 const CATCH_UP_MIN = 3 * 60          // a missed tick still sends within 3 hours, never later
 

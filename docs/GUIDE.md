@@ -2,7 +2,7 @@
 
 Two places, one set of data:
 - **Telegram bot.** Talk to it normally. Anything that changes your data comes back as a **card**, and nothing changes until you tap **✅**. Every saved change has **↩️ Undo**. Archiving never deletes anything. You can describe several things in one message ("training Monday 8 get there to 10 at Christchurch Finchley College, Uber back; Wednesday same club 7:45 be there…"): they all go on one card, and anything unclear is a quick-tap question on that card (✋ Skip leaves that part out).
-- **Dashboard.** On your phone's home screen, or **Dashboard** at the bottom of the bot chat: Home (with **Insights**), Tasks, Projects, Subjects, Inbox, Archive, Settings.
+- **Dashboard.** On your phone's home screen, or **Dashboard** at the bottom of the bot chat: Today (Home, with **Insights**), Tasks, Projects, Subjects, Training, Inbox, Archive, Settings and **Help** (the one-screen version of this guide).
 
 The bot can do anything the dashboard can (except connecting Google/Whoop, the Notion import and Export, which need the browser). If it can't do something yet, it says *"I can't do that yet — it needs adding in Claude Code"* and saves your request to **/ideas**.
 
@@ -10,8 +10,8 @@ The bot can do anything the dashboard can (except connecting Google/Whoop, the N
 
 ## Your day
 
-### ☀️ Morning (07:00)
-- **The brief** is your day in time order: **☀️ morning routine → 🏫 school → 📚 study → 🏋️ training (where, and when to leave) → 🌙 night routine**, with each day's **🧠 mental** and **💪 physical** load (🟢 low · 🟡 medium · 🔴 high).
+### ☀️ Morning (07:30 by default; on holidays not before your holiday wake time)
+- **The morning message** is your Today: at most 5 things, each with exactly what to open and one tap to mark it done. It is also the **📌 pinned Today**. `/brief full` gives the whole day in time order: **☀️ morning routine → 🏫 school → 📚 study → 🏋️ training (where, and when to leave) → 🌙 night routine**, with each day's **🧠 mental** and **💪 physical** load (🟢 low · 🟡 medium · 🔴 high).
 - **Tick things off** with the buttons under the brief or the **📌 pinned Today** at the top of the chat. Ticking a training session also counts it toward its weekly target. Tap again to untick.
 - If the day is **overloaded** (🧠 high and 💪 high, or over your day limit), one line says so and offers to move the easiest thing to tomorrow (one tap).
 - **Low Whoop recovery?** The brief says so, and a short card offers to move today's hard session or make it light.
@@ -29,11 +29,11 @@ Send anything; it becomes a card (✅ Save / 📥 Inbox / ✏️ Edit / ✖ Canc
 
 New Classroom homework arrives by itself; if this week is planned, the bot offers it a slot before it's due.
 
-### 🌙 Night (21:00)
-One message: **what's done**, and what isn't **moved to tomorrow's free time** with one **✅ Move to tomorrow** (or ✖ Leave them). Nothing new comes after 21:30 until the next brief.
+### 🌙 Night (21:00 by default)
+One message: tap what you did. Whatever isn't done **moves to tomorrow by itself** (no ✅ needed: it only moves your plan, not your records). No plan messages after 21:30 until the morning (reminders and leave alerts still come).
 
-### 🗓 Sunday reset (18:00)
-One **"Your week"** card:
+### 🗓 Sunday (18:00 by default)
+With the weekly check on (the default), one **weekly check** message: done vs planned, the ACT trend, gym PRs, what's behind and one suggestion. Tap **Plan next week? ✅** for the **"Your week"** card (with the weekly check off, the card comes by itself):
 1. **Last week** in 2–3 lines (sessions done, sleep, recovery, what slipped) and the **top 1–2 time savings**.
 2. **Each day** in order: school, your events, study blocks and homework (picked by the planner AI), every training session with **its place and leave-by time**, and 🧠/💪 per day.
 3. **Upper 2× or 3×** and why, and **how it compares with Owen's current days**.

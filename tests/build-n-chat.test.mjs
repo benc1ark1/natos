@@ -119,8 +119,9 @@ test('N: costs and guidelines by chat: “games are max load”, “Wednesday tr
 test('final polish: /help is the short guide (one phone screen); the tick puts the commands in Telegram’s “/” menu once', { skip }, async () => {
   await nat('/help')
   const help = chat.tg.sent().at(-1).text
-  assert.match(help, /☀️ <b>Morning<\/b>[\s\S]*🗓 <b>Sunday<\/b>[\s\S]*Your week[\s\S]*which days should I give Owen/)
-  assert.ok(help.replace(/<[^>]+>/g, '').length < 1400, 'short enough for one screen')
+  // item 8 (lib/help.ts, tests/help-*): the day, the 15 most useful messages, ✅, ideas, backup; every command is on /help all
+  assert.match(help, /☀️ <b>[\d:]+<\/b>[\s\S]*🗓 <b>Sunday [\d:]+<\/b>[\s\S]*Your week[\s\S]*All commands: \/help all$/)
+  assert.ok(help.replace(/<[^>]+>/g, '').length <= 1400, 'short enough for one screen')
   const { runTick } = await import('../lib/telegram/tick.ts')
   const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')
   const tick = async (hhmm) => runTick(await openOwnerSession(), Number((await import('./support/chat.mjs')).OWNER_TG), new Date(T().zonedToUTC(T().todayISO(), hhmm)))

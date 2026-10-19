@@ -355,8 +355,11 @@ export function planStudyDay(world: StudyWorld, day: DayContext, extra: PlanPick
     const left = daysBetween(date, due)
     const why = left < 0 ? `overdue (was due ${whenText(due, date)})` : left === 0 ? 'due today' : left === 1 ? 'due tomorrow' : `due ${dowShort(due)} ${shortDate(due)}`
     // the subject once ("Physics homework: …" stays as it is); what to open is the task's own details when it has them
-    const named = !!h.subject && h.title.toLowerCase().startsWith(h.subject.toLowerCase())
-    const title = /homework/i.test(h.title) ? `${h.subject && !named ? `${h.subject}: ` : ''}${h.title}` : `${h.subject ? `${h.subject} homework` : 'Homework'}: ${h.title}`
+    // (his short name counts: "FM homework: …" already names Further Maths; "Physics: forces sheet" isn't "Physics homework: Physics: …")
+    const lead = h.subject === 'Further Maths' ? /^(further maths|fm)\b[\s:–-]*/i : h.subject ? new RegExp(`^${h.subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[\\s:–-]*`, 'i') : null
+    const named = !!lead && lead.test(h.title)
+    const title = /homework/i.test(h.title) ? `${h.subject && !named ? `${h.subject}: ` : ''}${h.title}`
+      : `${h.subject ? `${h.subject} homework` : 'Homework'}: ${(named && h.title.replace(lead!, '')) || h.title}`
     const open = h.details?.split('\n').map((l) => l.trim()).find(Boolean)?.slice(0, 200) || HOMEWORK_OPEN
     return { key: `task:${h.id}`, kind: 'homework', tier: TIER.homework, subject: h.subject, title, open,
       minutes: h.minutes && h.minutes > 0 ? h.minutes : HOMEWORK_MINUTES, why, done: { kind: 'task', taskId: h.id }, taskId: h.id, heavy: true }

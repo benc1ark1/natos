@@ -24,28 +24,35 @@ import { syncGoogle } from '../google/sync'
 import { isLowRecovery, syncWhoop, whoopDay, whoopWords } from '../whoop/sync'
 import { enqueue, extendLock, isDone, nextQueued, releaseLock, say, setStatus, speedText, takeLock, type TurnRow, type TurnTiming } from './turns'
 import { pluginCommand, pluginCommands } from './plugins'
+import { helpCommandsTelegram, helpTelegram } from '../help'
 
 export const appUrl = () => {
   const host = process.env.VERCEL_PROJECT_PRODUCTION_URL
   return host ? `https://${host}` : null
 }
 
-// /help: the short version of docs/GUIDE.md (the everyday guide). Kept under one phone screen.
-export const HELP = [
-  '<b>Nat OS</b>: talk to me normally. Nothing changes until you tap ✅, and every change has ↩️ Undo.',
-  '',
-  '☀️ <b>Morning</b>: the 7:00 brief is your day in order: routine, school, study, training (where, and when to leave), routine. Tick things off on it or on the pinned Today.',
-  '📥 <b>During the day</b>: send anything: “physics homework due Fri”, “did upper”, “move study to 5pm”, “skip gym today”, “I’m ill, lighten today”.',
-  '❓ <b>Questions</b>: I ask a few a day to fill gaps (tap an answer). “what do you still need to know?” lists them.',
-  '🌙 <b>21:00</b>: what’s done; the rest moves to tomorrow with one ✅.',
-  '🗓 <b>Sunday</b>: at 18:00 the “Your week” card places everything. 🔁 moves a session (“upper Sat at PureGym”), ✅ applies it all.',
-  '🏋️ <b>Training</b>: “why is lower on Thursday?”, “upper 2x or 3x?”, “which days should I give Owen?”, “game is Saturday this week”.',
-  '⏱ <b>Time</b>: “where can I save time?”, “how’s my load this week?”, “when am I free Thursday?”',
-  '📐 <b>Maths</b>: “what maths should I do?”, “matrices green”, “set trig yellow”, “Book 1 chapters 1–13 green”, “maths test Tue 20 Oct: proof, vectors”.',
-  '',
-  '/today · /week · /coming · /free tomorrow · /maths · /inbox · /brief · /pin · /app · /google · /sync · /whoop · /mail · /ideas · /usage · /cancel · /help',
-  '<i>The full guide is docs/GUIDE.md.</i>',
-].join('\n')
+// /help (and /start): the one-screen guide (his times, the 15 most useful messages, ✅, the ideas inbox, the backup);
+// "/help all": every command. One source for these, the Help page and docs/HOW-TO-USE.md: lib/help.ts (item 8).
+// HELP is the guide with the default times (used when his settings can't be read).
+export const HELP = helpTelegram()
+
+/** His settings for /help's times: one quick read, the defaults if it fails or takes over 1.5 s (/help stays fast). */
+async function helpPlanning(sb?: SupabaseClient): Promise<unknown> {
+  const read = (async () => {
+    const s = sb ?? await openOwnerSession()
+    const { data, error } = await s.from('profiles').select('planning').maybeSingle()
+    return error ? null : data?.planning ?? null
+  })().catch(() => null)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), 1500) })
+  try { return await Promise.race([read, late]) } finally { clearTimeout(timer) }
+}
+
+/** The /help reply: "/help all" (or "/help commands") = every command; anything else = the one-screen guide. */
+export async function helpReply(text: string, sb?: SupabaseClient): Promise<string> {
+  if (/^\/help(?:@\w+)?\s+(?:all|commands|everything)\b/i.test(text)) return helpCommandsTelegram()
+  return helpTelegram(await helpPlanning(sb))
+}
 
 /** The commands in Telegram's “/” menu (set once, with the menu button). Plug-in commands replace a built-in one of the same name. */
 const BUILTIN_COMMANDS = [
@@ -81,8 +88,8 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
   const stopTyping = (text && !helpOnly) || WORK_TAP.test(update.callback_query?.data ?? '') ? keepTyping(chatId) : null
   const { done } = runTimed(arrived, async () => {
     try {
-      if (helpOnly) {   // no data needed
-        await send(chatId, HELP)
+      if (helpOnly) {   // no queue: one quick read of his settings for the times
+        await send(chatId, await helpReply(text!))
         const url = appUrl()
         if (url) await setMenuButton(chatId, `${url}/tg`).catch(() => null)   // "Dashboard" opens the app inside Telegram
         return
@@ -230,7 +237,7 @@ async function respond(sb: SupabaseClient, chatId: number, turn: TurnRow): Promi
   if (/^\/mail\b/.test(text)) { await say(sb, chatId, await mailText(sb)); return 'command' }
   const cap = text.match(/^\/cap\b\s*\$?\s*([\d.]*)\s*$/)
   if (cap) { await say(sb, chatId, await setCap(sb, cap[1])); return 'command' }
-  await say(sb, chatId, HELP)
+  await say(sb, chatId, await helpReply(text, sb))
   return 'command'
 }
 
