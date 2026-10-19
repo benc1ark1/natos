@@ -3,13 +3,14 @@
 import { DAYS_OF_WEEK, daysOf, moreSettings } from '../settings'
 import type { ActSettings } from './types'
 
-export const DEFAULT_ACT_SETTINGS: ActSettings = { halfTermMin: 75, schoolMin: 30, schoolDays: [2, 4, 6], flashMin: 10, fullTestDow: 3, mockDow: 3, science: true }
+export const DEFAULT_ACT_SETTINGS: ActSettings = { halfTermMin: 75, schoolMin: 30, schoolDays: [2, 4, 6], flashMin: 10, fullTestDow: 3, mockDows: [2, 4], countdownHolidayMin: 240, science: true }
 export const DEFAULT_ACT_GOAL = 36
 
 /** His ACT settings (anything missing or odd is the default) and his target composite. */
 export function actSettings(planning: unknown): ActSettings & { goal: number } {
   const s = moreSettings(planning) as unknown as Record<string, string | number>
   const days = [...new Set(daysOf(String(s.actSchoolDays ?? '')))].sort((a, b) => a - b)
+  const mocks = [...new Set(daysOf(String(s.actMockDays ?? '')))].sort((a, b) => a - b)
   const dow = (v: unknown, d: number) => { const i = DAYS_OF_WEEK.indexOf(String(v)); return i >= 0 ? i + 1 : d }
   const num = (v: unknown, d: number) => (Number.isInteger(v) ? Number(v) : d)
   return {
@@ -19,7 +20,8 @@ export function actSettings(planning: unknown): ActSettings & { goal: number } {
     schoolDays: days.length ? days : DEFAULT_ACT_SETTINGS.schoolDays,
     flashMin: num(s.actFlashMin, DEFAULT_ACT_SETTINGS.flashMin),
     fullTestDow: dow(s.actTestDay, DEFAULT_ACT_SETTINGS.fullTestDow),
-    mockDow: dow(s.actMockDay, DEFAULT_ACT_SETTINGS.mockDow),
+    mockDows: mocks.length ? mocks : DEFAULT_ACT_SETTINGS.mockDows,
+    countdownHolidayMin: num(s.actCountdownHolidayMin, DEFAULT_ACT_SETTINGS.countdownHolidayMin),
     science: s.actScience !== 'no',
   }
 }

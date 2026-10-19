@@ -203,7 +203,10 @@ export function doneChange(key: string, value: string, planning: unknown): Setup
 
 export { isoDow }
 
-/** This week's number of upper sessions (the optimiser decides otherwise): value "count=2" or "auto=yes". */
+/**
+ * This week's number of upper sessions (the optimiser decides otherwise): value "count=2" or "auto=yes"; with
+ * "until=YYYY-MM-DD" ("upper 3× until 1 Nov") every week from this one to the week of that date.
+ */
 export function upperWeekChange(value: string, planning: unknown, today: string): Result {
   const kv = kvOf(value)
   const raw = (planning && typeof planning === 'object' ? (planning as Record<string, unknown>).upperWeeks : null)
@@ -217,6 +220,16 @@ export function upperWeekChange(value: string, planning: unknown, today: string)
   }
   const n = Number(kv.count)
   if (!Number.isInteger(n) || n < 0 || n > 6) return { problem: 'how many upper sessions this week?' }
+  const until = /^\d{4}-\d{2}-\d{2}$/.test(kv.until ?? '') ? kv.until! : null
+  if (until && until < today) return { problem: `${until} has passed: until which date?` }
+  if (until && until > addDays(today, 70)) return { problem: 'at most 10 weeks ahead: until which date?' }
+  if (until && weekStartISO(until) > wk) {
+    const all: string[] = []
+    for (let w = wk; w <= weekStartISO(until); w = addDays(w, 7)) all.push(w)
+    if (all.every((w) => weeks[w] === n)) return { problem: `upper is already ${n}× every week until ${shortDate(until)}` }
+    for (const w of all) weeks[w] = n
+    return { change: { key: 'upperWeeks', title: 'Upper each week', line: `💪 Upper: <b>${n}× a week until ${dowShort(until)} ${shortDate(until)}</b> <i>(${all.length} weeks; then the optimiser decides again; football and Owen’s days stay as they are)</i>`, patch: { upperWeeks: weeks } } }
+  }
   if (weeks[wk] === n) return { problem: `upper is already ${n}× this week` }
   weeks[wk] = n
   return { change: { key: 'upperWeeks', title: 'Upper this week', line: `💪 Upper this week: <b>${n}×</b> <i>(this week only; the optimiser decides again next week)</i>`, patch: { upperWeeks: weeks } } }

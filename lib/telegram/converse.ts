@@ -193,6 +193,11 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   }
 
   const d = res.decision
+  // Two things sent quickly while a card waits: a "correction" that has nothing to do with the waiting card is a new
+  // item of its own, so the card isn't replaced (and his first message lost). After ✏️ Change his next message is the
+  // card's new version, as before.
+  if (d.intent === 'correction' && card?.kind === 'capture' && card.status !== 'editing'
+    && message.trim().split(/\s+/).length >= 3 && !looksLikePartialEdit(message) && !sharesWords(card.payload.proposal?.title ?? card.text, `${d.itemText ?? ''} ${message}`)) d.intent = 'new'
   // A change to a day plan that isn't applied yet: plan that day again with his words. (Not the small add-only cards:
   // "move it to tomorrow", "fit X into your plan", a knock-on: his next instruction is about something else.)
   const replannable = card?.kind === 'plan' && !(card.payload as { add?: boolean }).add
@@ -319,6 +324,14 @@ async function answer(sb: SupabaseClient, chatId: number, question: string, a: A
   }
   const refs: Ref[] = [...a.plan.map((p) => ({ kind: p.kind, id: p.id, title: p.title })), ...(list?.refs ?? [])]
   await say(sb, chatId, lines.join('\n'), buttons, { intent: 'question', refs, pending_id: pendingId })
+}
+
+const STOP = new Set(['the', 'and', 'for', 'due', 'with', 'this', 'that', 'next', 'make', 'its', 'it’s', 'from', 'about', 'add', 'need', 'have', 'today', 'tomorrow', 'week'])
+const wordsOf = (s: string) => new Set(s.toLowerCase().replace(/[’']/g, '').split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w)))
+/** Do two texts share a real word ("Chemistry notes" and "Chemistry notes due Friday, 30 min")? */
+export function sharesWords(a: string, b: string): boolean {
+  const x = wordsOf(a)
+  return [...wordsOf(b)].some((w) => x.has(w))
 }
 
 /**

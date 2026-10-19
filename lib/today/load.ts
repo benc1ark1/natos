@@ -13,6 +13,7 @@ import { HOMEWORK_DAYS, planStudyDay } from '../tracker/engine'
 import type { StudyWorld } from '../tracker/types'
 import { loadActWorld } from '../act/data'
 import { actPicks } from '../act/engine'
+import { actTaskMinutes, isActTask } from '../act/tasks'
 import type { ActWorld } from '../act/types'
 import type { DayContext, Pick } from '../plan-items'
 import { TIER } from '../plan-items'
@@ -52,20 +53,27 @@ function trainingOpen(b: { start_time: string; title: string }, d: ViewData, sch
   return { open: `leave ${fromSchool ? 'school ' : ''}${l.leave} (${l.how.replace(/ from school/, '')})`, leave: l.leave }
 }
 
-/** His must-do tasks that aren't the planner's: due by tomorrow (tier 1), or on his Today column / starred (after study). */
-export function taskPicks(tasks: Task[], date: string): Pick[] {
+const openTask = (t: Task) => !(t.status === 'completed' || t.archived_at || t.status === 'someday' || t.is_system)
+
+/**
+ * His must-do tasks that aren't the planner's: due by tomorrow (tier 1), or on his Today column / starred (after study).
+ * His ACT tasks go on the day he gave them (with the ACT work, never the day before).
+ */
+export function taskPicks(tasks: Task[], date: string, actSubjectId?: string | null): Pick[] {
   const tomorrow = addDays(date, 1)
   const out: Pick[] = []
   for (const t of tasks) {
-    if (t.status === 'completed' || t.archived_at || t.status === 'someday' || t.is_system) continue
+    if (!openTask(t)) continue
     const due = deadlineOf(t)
+    const act = isActTask(t, actSubjectId) && !!due
+    if (act && due! > date) continue
     const urgent = t.importance === 'must' && !!due && due <= tomorrow
-    if (!urgent && t.status !== 'today' && !t.is_key) continue
+    if (!act && !urgent && t.status !== 'today' && !t.is_key) continue
     const url = (t as Task & { hand_in_url?: string | null }).hand_in_url ?? null
     out.push({
-      key: `task:${t.id}`, kind: 'task', tier: urgent ? TIER.homework : TIER.leftover, subject: null, title: t.title,
+      key: `task:${t.id}`, kind: 'task', tier: act && due === date ? TIER.test : urgent ? TIER.homework : TIER.leftover, subject: act ? 'ACT' : null, title: t.title,
       open: t.details?.split('\n')[0]?.slice(0, 200) ?? '', url, minutes: t.duration_minutes ?? 30,
-      why: due ? deadlineLabel(t, date) : t.is_key ? 'starred' : 'on your Today list', done: { kind: 'task', taskId: t.id }, taskId: t.id,
+      why: act && due === date ? 'your ACT task for today' : due ? deadlineLabel(t, date) : t.is_key ? 'starred' : 'on your Today list', done: { kind: 'task', taskId: t.id }, taskId: t.id,
     })
   }
   // earliest deadline first within each tier
@@ -146,7 +154,7 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
 
   // maxPicks (contracts §3.1): how many study picks Today has room for, so the planner chooses which win
   const planner = (studyMinutes: number, maxPicks?: number) => {
-    const day = { date, dow: isoDow(date), mode, studyMinutes, ...(maxPicks ? { maxPicks } : {}) } as DayContext & { maxPicks?: number }
+    const day = { date, dow: isoDow(date), mode, studyMinutes, actTaskMin: actTaskMinutes(data.tasks, date, act.subjectId), ...(maxPicks ? { maxPicks } : {}) } as DayContext & { maxPicks?: number }
     let extra: Pick[] = []
     try { extra = actPicks(act, day) } catch { extra = [] }
     // (training comes from his week's blocks or the week optimiser below, never from the study planner)
@@ -163,7 +171,7 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
   const training = blocks.rows.filter((b) => b.kind === 'training' && !isAuto(b, date))
   if (auto.length || his.length) {
     const autoLive = auto.length > 0 && (auto.some((b) => b.status === 'planned') || !his.length)
-    const picks = [...planner(MAX_STUDY_MIN), ...taskPicks(data.tasks, date)]
+    const picks = [...planner(MAX_STUDY_MIN), ...taskPicks(data.tasks, date, act.subjectId)]
     const list = autoLive ? [...auto, ...training] : [...his, ...auto.filter((b) => b.status === 'done'), ...training]
     const plan = todayFromSaved({ date, mode, blocks: list, picks, fixed, max, source: autoLive ? 'auto' : 'his', trainingOpen: trainOpen, effectDone: doneOf, now: nowHM })
     return { plan: withNote(plan), data, sqlMissing: blocks.sqlMissing, world, act }
@@ -213,7 +221,7 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
 
   const studyFree = slots.reduce((a, s) => a + s.minutes, 0) - trainingIn.reduce((a, t) => a + minutesOf(t.end) - minutesOf(t.start), 0)
   const studyMinutes = Math.max(0, Math.min(studyFree, budget ?? MAX_STUDY_MIN))
-  const tasks = taskPicks(data.tasks, date)
+  const tasks = taskPicks(data.tasks, date, act.subjectId)
   // not done yesterday: it comes back today, straight after homework (his own plan's blocks too: a task block as that
   // task), unless it got done another way since (reported by message, task completed)
   const yesterday = addDays(date, -1)

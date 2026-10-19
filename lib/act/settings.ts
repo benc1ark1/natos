@@ -13,6 +13,9 @@ export const ACT_SETTINGS: Record<string, ExtraSpec> = {
   actSchoolDays: { label: 'ACT sessions in school weeks on (a guess)', kind: 'list', group: 'act', max: 80, help: 'Days, separated by commas (“tuesday, thursday, saturday”).', default: 'tuesday, thursday, saturday' },
   actFlashMin: { label: 'Grammar flashcards (Anki) a day (0 = off)', kind: 'minutes', group: 'act', min: 0, max: 60, default: 10 },
   actTestDay: { label: 'Weekly full timed ACT test in the holidays on (review the next day)', kind: 'choice', group: 'act', choices: DAYS, default: 'wednesday' },
-  actMockDay: { label: 'Retake countdown: full timed mock on (review the next day)', kind: 'choice', group: 'act', choices: DAYS, default: 'wednesday' },
+  // his half-term before the 24 Oct retake (19 Oct 2026): full timed tests Tue + Thu, each reviewed straight after, 4 h a day
+  actMockDays: { label: 'Retake countdown: full timed tests on (holidays: reviewed straight after; school weeks: the first day, reviewed the next day)', kind: 'list', group: 'act', max: 80,
+    help: 'Days, separated by commas (“tuesday, thursday”).', default: 'tuesday, thursday' },
+  actCountdownHolidayMin: { label: 'Retake countdown: ACT a day in the holidays', kind: 'minutes', group: 'act', min: 30, max: 300, default: 240 },
   actScience: { label: 'Full ACT tests include Science', kind: 'choice', group: 'act', choices: ['yes', 'no'], default: 'yes' },
 }

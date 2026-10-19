@@ -17,6 +17,9 @@ import { savedWeek, weekEvents } from './weekread'
 import { isLowRecovery, whoopDay, type WhoopDay } from '../whoop/sync'
 import { dateISOOf, minutesOf, timeOf, weekStartISO, zonedToUTC } from '../time'
 import { mentalDays, type MentalOverride } from '../mental'
+import { holidayChanges, isHoliday } from '../today/holidays'
+import { setting } from '../settings'
+import type { PlanningSettings } from '../freetime'
 import type { EventException, EventRow, WeeklyTarget } from '../types'
 import { nearestFree, overlapOf, ripple, type Planned, type Ripple, type WeekWorld } from '../week'
 import type { Action } from './actions'
@@ -39,14 +42,16 @@ export async function loadWorld(sb: SupabaseClient, data: ViewData, range?: { fr
   // the week he sent (if any): its sessions and busy times, alongside his calendars
   const sent = await savedWeek(sb, { from, to }, types)
   const events = sent.length ? [...data.events, ...weekEvents(sent, data.events, data.changes)] : data.events
+  // his holidays (half-term): no school on those days, the same as Today (lib/today/holidays.ts)
+  const changes = holidayChanges(events, data.changes, data.planning, addDays(from, -1), addDays(to, 1))
   const energy = new Map(((states.data ?? []) as { on_date: string; energy: Energy | null }[]).filter((x) => x.energy).map((x) => [x.on_date, x.energy!]))
   const said = energy.has(data.today)
   const hh = (t: string) => t.slice(0, 5)
   const plannedRows = ((planned.error ? [] : planned.data ?? []) as Planned[]).map((b) => ({ ...b, start_time: hh(b.start_time), end_time: hh(b.end_time) }))
-  const mental = mentalDays({ from: addDays(from, -1), to, planning: data.planning, events, changes: data.changes, goals: data.goals, tasks: data.tasks, blocks: plannedRows, overrides })
+  const mental = mentalDays({ from: addDays(from, -1), to, planning: data.planning, events, changes, goals: data.goals, tasks: data.tasks, blocks: plannedRows, overrides })
   return {
-    today: data.today, nowMin: minutesOf(timeOf(data.now)), from, to, settings: data.settings ?? DEFAULT_PLANNING,
-    events, changes: data.changes, targets: data.targets, logs: data.logs, weekCounts: data.weekCounts ?? [],
+    today: data.today, nowMin: minutesOf(timeOf(data.now)), from, to, settings: holidayBounds(data.settings ?? DEFAULT_PLANNING, data.planning),
+    events, changes, targets: data.targets, logs: data.logs, weekCounts: data.weekCounts ?? [],
     rules: rules.rules,
     energy: withWhoop(energy, data, whoopToday),
     planned: plannedRows,
@@ -60,6 +65,21 @@ export async function loadWorld(sb: SupabaseClient, data: ViewData, range?: { fr
 }
 
 export const weekRange = (today: string) => checkinRange(today)
+
+/** On his holidays the day starts after his holiday wake time and morning routine (the same as Today). */
+function holidayBounds(s: PlanningSettings, planning: unknown): PlanningSettings {
+  const start = minutesOf(setting<string>(planning, 'holidayWakeAt')) + setting<number>(planning, 'morningMin')
+  const hhmm = `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`
+  return {
+    ...s,
+    dayBounds: (d: string) => {
+      const b = s.dayBounds?.(d) ?? null
+      if (!isHoliday(planning, d)) return b
+      const end = b?.end ?? s.dayEnd
+      return { start: b && minutesOf(b.start) > start ? b.start : hhmm, end }
+    },
+  }
+}
 
 /** His own 🧠 numbers for sessions ("the SMC mock is max mental"): load_costs.mental, after build-o.sql (none before). */
 export async function loadMentalOverrides(sb: SupabaseClient): Promise<MentalOverride[]> {
