@@ -77,21 +77,28 @@ test('O3: “plan my week” → one Your week card (review, routines, school, s
   assert.equal((await q(`select count(*)::int n from plan_blocks where status = 'planned'`))[0].n, 0)
 })
 
-test('O3: the Your week card comes by itself on Sunday at the week-reset time (once), for the coming week', { skip }, async () => {
+test('O3: on Sunday at the week-reset time the weekly check comes (once); its “Plan next week? ✅” brings the Your week card for the coming week', { skip }, async () => {
+  // (item 7, 19 Oct: the card used to come by itself; now the weekly check goes first and the card comes on his tap)
   await natsWeek()
   const { runTick } = await import('../lib/telegram/tick.ts')
   const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')
-  // the next Sunday (today counts)
-  const sun = chat.next(7)
-  const at = (hhmm) => new Date(T().zonedToUTC(sun, hhmm))
-  chat.ai.script(PLAN, () => ({ days: [], note: '', push_back: '' }))
-  const sb = await openOwnerSession()
-  await runTick(sb, OWNER_TG, at('18:05'))
-  await runTick(sb, OWNER_TG, at('18:10'))
-  const cards = chat.tg.sent().filter((m) => /🗓 <b>Your week<\/b>/.test(m.text))
-  assert.equal(cards.length, 1, 'one card, once')
-  assert.match(cards[0].text, new RegExp(`Your week</b> · Mon ${+T().addDays(sun, 1).slice(8)} `), 'for the coming week')
-  chat.noSurprises()
+  const { setClock } = await import('./support/clock.mjs')
+  // last Sunday (the clock only goes back), so the tap that follows is on the same Sunday
+  const sun = past(7)
+  try {
+    const sb = await openOwnerSession()
+    setClock(T().zonedToUTC(sun, '18:05')); await runTick(sb, OWNER_TG, new Date())
+    setClock(T().zonedToUTC(sun, '18:10')); await runTick(sb, OWNER_TG, new Date())
+    const checks = chat.tg.sent().filter((m) => /📊 <b>Weekly check<\/b>/.test(m.text))
+    assert.equal(checks.length, 1, 'one weekly check, once')
+    assert.equal(chat.tg.sent().filter((m) => /🗓 <b>Your week<\/b>/.test(m.text)).length, 0, 'the card waits for his tap')
+    chat.ai.script(PLAN, () => ({ days: [], note: '', push_back: '' }))
+    await tapOn(checks[0], 'Plan next week')
+    const cards = chat.tg.sent().filter((m) => /🗓 <b>Your week<\/b>/.test(m.text))
+    assert.equal(cards.length, 1, 'one card')
+    assert.match(cards[0].text, new RegExp(`Your week</b> · Mon ${+T().addDays(sun, 1).slice(8)} `), 'for the coming week')
+    chat.noSurprises()
+  } finally { setClock(null) }
 })
 
 /** The most recent past date with this ISO weekday (1 = Mon … 7 = Sun), never today. */

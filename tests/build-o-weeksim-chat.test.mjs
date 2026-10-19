@@ -265,10 +265,20 @@ test('O15: a whole week through the bot, Monday’s first brief to Sunday’s re
 
   assert.ok(lowDone, 'a low-Whoop morning happened')
 
-  // =============== Sunday 18:00: the reset card for the coming week
-  chat.ai.script(PLAN, () => ({ days: [], note: 'Light week of study.', push_back: '' }))
+  // =============== Sunday 18:00: the weekly check (item 7), then its "Plan next week? ✅" → the card for the coming week
   await setAt(D(6), '18:05')
   await tick('Sun 18:05')
+  const check = lastOf(/📊 <b>Weekly check<\/b>/)
+  assert.ok(check, 'Sunday’s weekly check')
+  assert.ok(!lastOf(/🗓 <b>Your week<\/b> · Mon/) || lastOf(/🗓 <b>Your week<\/b> · Mon/).message_id < check.message_id, 'no new card by itself')
+  assert.match(check.text, /\n📚 .+\d+\/\d+/, 'done vs planned this week')
+  assert.match(check.text, /\n🏋️ .*Upper \d+\/\d+/, 'upper sessions vs the target')
+  assert.match(check.text, /\n💡 .+/, 'one suggestion')
+  assert.ok(!log.filter((x) => x.when === 'Sun 18:05').some((x) => /Before tomorrow, don’t forget/.test(x.text)), 'no daily nudge too: Sunday is one message')
+  chat.ai.script(PLAN, () => ({ days: [], note: 'Light week of study.', push_back: '' }))
+  await setAt(D(6), '18:07')
+  await tapOn(check, 'Plan next week')
+  collect('Sun 18:07 plan next week')
   const reset = lastOf(/🗓 <b>Your week<\/b> · Mon/)
   assert.ok(reset, 'Sunday’s card')
   assert.match(reset.text, /✅ <b>Last week<\/b>: \d+\/\d+ sessions done/, 'starts with how last week went')
