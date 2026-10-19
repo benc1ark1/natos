@@ -4,7 +4,8 @@
 // - After the first brief of this build: the gap questions (first), the calendar clean-up, Owen's days, Your week.
 // - Gap questions: a round after the brief and after school, one at a time (lib/telegram/gapask.ts).
 // - A low-Whoop morning, or his calendar changing under an applied week: a short "moved X — ✅?" card.
-// - Sunday at his week-reset time: the Your week card for the coming week.
+// - Sunday at his week-reset time: the Your week card for the coming week (only with the weekly check off: item 7's
+//   check goes out instead, and its "Plan next week? ✅" sends the card).
 // - At the end-of-day time: the evening message (item 5): tap what you did; the rest rolls on by itself.
 // - Once a day: if his weekly pattern changed, whether Owen's days still fit.
 import 'server-only'
@@ -13,7 +14,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { checkinRange } from '../ask/week'
 import { loadPlannerContext } from '../ask/server'
 import { expandEvents, isSchool } from '../events'
-import { moreSettings } from '../settings'
+import { checkinDow, moreSettings } from '../settings'
 import { addDays, isoDow, minutesOf, timeOf } from '../time'
 import { isLowRecovery, whoopDay } from '../whoop/sync'
 import { askNextGap } from './gapask'
@@ -25,6 +26,7 @@ import { loadViewData, type ViewData } from './views'
 import { proposeYourWeek } from './yourweek'
 import { morningAt } from '../today/holidays'
 import { sendEvening, sendMorning } from '../today/send'
+import { weeklyCheckOn } from '../weekly/settings'
 
 /** Is it at or after `at`, within `span` minutes? */
 const within = (now: string, at: string, span: number) => minutesOf(now) >= minutesOf(at) && minutesOf(now) < minutesOf(at) + span
@@ -87,7 +89,10 @@ export async function proactive(sb: SupabaseClient, chatId: number, nowDate: Dat
   if (await inSchool()) return sent
 
   // the Sunday week reset: the Your week card for the coming week (two hours to catch a missed tick)
-  if (isoDow(today) === 7 && within(now, s.resetAt, 120)) {
+  // (Item 7: with the weekly check on, the default, the check goes out instead and its "Plan next week? ✅" sends this
+  // card: lib/telegram/plugins/weekly.ts. Sunday gets one message, not two. Only when the check is at the weekend: a
+  // weekday check plans the rest of that week, so next week's card still comes here on Sunday.)
+  if (isoDow(today) === 7 && within(now, s.resetAt, 120) && !(weeklyCheckOn(planning) && checkinDow(planning) >= 6)) {
     await step('yourweek', () => once(sb, `yourweek:${today}`, async () => {
       const ctx = await loadPlannerContext(sb)
       if (!(await proposeYourWeek(sb, chatId, 'your week (Sunday reset)', ctx, await view(), { range: checkinRange(today), auto: true }))) throw new Error('no card')

@@ -26,6 +26,8 @@ import { checkinDow, moreSettings } from '../settings'
 import { planningSettings } from '../freetime'
 import { proactive } from './schedule'
 import { morningAt } from '../today/holidays'
+import { weeklyCheckOn } from '../weekly/settings'
+import { checkCoversNudge } from './plugins/weekly'
 
 // The brief, the nudge, the check-in day and the "leave in …" lead are his settings (lib/settings.ts: briefAt 07:00,
 // nudgeAt 18:00, checkinDay Sunday, leaveAlertMin 10 unless he changes them).
@@ -62,8 +64,12 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
 
   // the brief; the first one after build-o.sql is missing says so, once (the app works without it)
   if (d && inWindow(now, BRIEF_AT)) await once(`brief:${today}`, async () => buildBrief(sb, d, nowDate, appUrl(), { note: await sqlNote(sb) }))
-  if (d && inWindow(now, NUDGE_AT)) await once(`nudge:${today}`, async () => buildNudge(d))
-  if (isoDow(today) === checkinDow(planning) && inWindow(now, NUDGE_AT)) {
+  // (Item 7: on the check-in day, once the weekly check has gone out or while it still can today, this nudge waits /
+  // is skipped: the check lists the same things, so that day gets one message. If the check can't go out (quiet
+  // hours, its window over without it), the nudge goes as usual: lib/telegram/plugins/weekly.ts checkCoversNudge)
+  if (d && inWindow(now, NUDGE_AT) && !(await checkCoversNudge(sb, planning, today, now))) await once(`nudge:${today}`, async () => buildNudge(d))
+  // (Item 7: with the weekly check on, the default, its one message replaces this reminder: lib/telegram/plugins/weekly.ts)
+  if (isoDow(today) === checkinDow(planning) && inWindow(now, NUDGE_AT) && !weeklyCheckOn(planning)) {
     const url = appUrl()
     await once(`checkin:${today}`, async () => `🗓 <b>Weekly check-in</b>: 5 minutes to look back, pick your top 3 and plan the week.${url ? `\n<a href="${esc(url)}">Open Nat OS</a> → Ask AI → Weekly check-in` : ''}`)
   }

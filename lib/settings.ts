@@ -27,7 +27,7 @@ const CORE_SETTINGS: Record<string, Spec> = {
   gameDay: { label: 'Usual game day', kind: 'choice', group: 'week', choices: [...DAYS_OF_WEEK, 'none'] },
   gameLeave: { label: 'Game day: leave at', kind: 'time', group: 'week' },
   gameBack: { label: 'Game day: back at', kind: 'time', group: 'week' },
-  resetAt: { label: 'Sunday week reset (your “Your week” card comes then)', kind: 'time', group: 'week' },
+  resetAt: { label: 'Sunday weekly check (the Your week card follows your ✅)', kind: 'time', group: 'week' },
   resetMin: { label: 'Sunday week reset takes', kind: 'minutes', group: 'week', min: 10, max: 120 },
   endOfDayAt: { label: 'Evening message', kind: 'time', group: 'week', help: 'Tick what you did; the rest moves to tomorrow by itself.' },
   quietFrom: { label: 'No new messages after this (until the morning brief)', kind: 'time', group: 'week' },
