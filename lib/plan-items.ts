@@ -59,4 +59,5 @@ export type DayContext = {
   studyMinutes: number          // minutes he has for study today (free time after events, training and routines)
   maxPicks?: number             // the most study picks to return (default 5, clamped 1–6; Today passes 5 − training − tasks).
                                 // Tier-8 training picks passed in `extra` go through OUTSIDE this cap.
+  actTaskMin?: number           // minutes of the ACT tasks he put on this day himself (part of the day's ACT time)
 }

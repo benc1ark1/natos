@@ -24,6 +24,8 @@ const show = (m) => { if (process.env.SHOW) console.log(`\n----\n${m.text}\n${JS
 /** Nat's real week shape: own school, tutors and football events; targets; a homework due in two days. */
 export async function natsWeek() {
   const from = T().addDays(T().todayISO(), -14)
+  // a school week whatever the date (the Holidays setting's default is this half-term)
+  await q(`update profiles set planning = coalesce(planning, '{}'::jsonb) || '{"holidays":"none"}'::jsonb where user_id = $1`, [chat.users.owner])
   await add('events', { title: 'School', repeat_days: [1, 2, 3, 4, 5], start_time: '08:45', end_time: '16:00', repeat_from: from, is_school: true })
   await add('events', { title: 'CS tutor', repeat_days: [1, 4], start_time: '17:30', end_time: '18:30', repeat_from: from })
   await add('events', { title: 'Maths tutor', repeat_days: [3], start_time: '17:00', end_time: '18:00', repeat_from: from })

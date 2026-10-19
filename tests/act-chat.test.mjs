@@ -117,12 +117,12 @@ test('"ACT retake is 12 Dec" → countdown mode; /act shows it; "no ACT retake" 
   assert.equal((await q(`select count(*)::int n from goals`))[0].n, 0, 'nothing before ✅')
   await tap('Apply')
   assert.match(last().text, new RegExp(`🔥 Countdown: retake <b>${await label('12 Dec')}</b>`))
-  assert.match(last().text, /Daily timed English \+ every miss against its rule · Reading \/ Maths alternate · mock on Wednesdays · light day before/)
+  assert.match(last().text, /Holidays: 4 h a day, full timed tests Tuesday \+ Thursday \(reviewed straight after\)\. School weeks: daily timed English \+ every miss against its rule · Reading \/ Maths alternate · mock on Tuesdays · light day before/)
   const [g] = await q(`select title, kind, test_kind, target_date::text d, subject_id is not null as on_act from goals`)
   assert.deepEqual(g, { title: 'ACT retake', kind: 'test', test_kind: 'act', d: want, on_act: true })
   await nat('/act')
   assert.match(last().text, new RegExp(`🔥 Countdown: retake <b>${await label('12 Dec')}</b>`))
-  assert.match(last().text, /Today: <b>ACT (countdown: timed English|mock: full timed test)/)
+  assert.match(last().text, /Today: <b>ACT(?: countdown: timed English| mock: full timed test|: timed English| full timed test)/, 'school week or holiday (half-term) shape')
   // moved
   await nat('ACT retake moved to 13 Feb')
   assert.match(last().text, new RegExp(`🎯 ACT retake: ${await label('12 Dec')} → <b>${await label('13 Feb')}</b>`))
@@ -296,7 +296,7 @@ test('loadActWorld for Today (as Nat, row level security): empty before set-up; 
   // Today ticks it: the plan block is done → nothing more today
   await chat.add('plan_blocks', { plan_id: '00000000-0000-0000-0000-000000000001', on_date: d, start_time: '10:00', end_time: '11:15', title: p.title, status: 'done', pick_key: p.key })
   const after = await loadActWorld(sb, d)
-  assert.ok(after.doneToday.includes('act:day') && after.doneToday.includes(p.key))
+  assert.ok(after.doneToday.includes(p.key), 'each ticked pick by its key (a holiday countdown day has two)')
   assert.deepEqual(actPicks(after, ctx), [])
   // the due miss moves on a stage (+7 days), like a redo by chat
   // probe 7: only a pick that had the redo step moves misses on (its key ends ':redo')
@@ -332,7 +332,7 @@ test('a retake date before the books are set up: countdown works; /act offers th
   await nat('/act')
   assert.match(last().text, new RegExp(`🔥 Countdown: retake <b>${await label('12 Dec')}</b>`))
   assert.match(last().text, /Your ACT books aren’t set up yet/)
-  assert.match(last().text, /Today: <b>ACT (countdown|mock)/)
+  assert.match(last().text, /Today: <b>ACT( countdown| mock|: timed| full timed test)/)
   assert.ok(chat.button(last(), 'Set up ACT'))
   await tap('Set up ACT')
   await tap('Apply')

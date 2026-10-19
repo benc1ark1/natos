@@ -28,9 +28,11 @@ function book(role, statuses = {}, over = {}) {
 const allBooks = (over = {}) => BOOKS.map((b) => over[b.role] ?? book(b.role))
 const sc = (kind, e, m, r, s = null, takenOn = '2026-10-10') => ({ id: uid(), takenOn, kind, english: e, maths: m, reading: r, science: s, composite: E.composite(e, m, r) })
 const REAL = sc('real', 34, 34, 35, 35, '2026-10-01')
-const world = (o = {}) => ({ today: '2026-10-19', retake: null, goal: 36, scores: [REAL], books: allBooks(), misses: [], doneToday: [], settings: DEFAULT_ACT_SETTINGS, subjectId: 'S', ...o })
+// (the school-week countdown shape with its mock on Wednesdays; his half-term week is in halfterm-week-unit.test.mjs)
+const world = (o = {}) => ({ today: '2026-10-19', retake: null, goal: 36, scores: [REAL], books: allBooks(), misses: [], doneToday: [], settings: { ...DEFAULT_ACT_SETTINGS, mockDows: [3] }, subjectId: 'S', ...o })
 const ctx = (date, mode = 'school', studyMinutes = 0) => ({ date, dow: isoDow(date), mode, studyMinutes })
-const pick = (w, d) => { const p = E.actPicks(w, d); assert.ok(p.length <= 1, 'one ACT line a day at most'); return p[0] ?? null }
+// one ACT line a day; a holiday in the countdown has two blocks (4 h)
+const pick = (w, d) => { const p = E.actPicks(w, d); assert.ok(p.length <= (w.retake && d.mode === 'half_term' ? 2 : 1), 'one ACT line a day at most'); return p[0] ?? null }
 const week = (mon) => Array.from({ length: 7 }, (_, i) => addDays(mon, i))
 const HALF = '2026-10-26'   // Mon of half-term
 const SCHOOL = '2026-10-19' // Mon of a school week
@@ -222,7 +224,7 @@ test('countdown tier: 2 in the last 21 days, else 7; the day before is light; th
   assert.match(eve.open, /Light: read your rules list \(who vs whom, comma splice\) and your misses list \(2 open\)\. Nothing timed\. .*early night/)
   const dayOf = pick(w, ctx('2026-11-07'))
   assert.equal(dayOf.key, 'act:test:day')
-  assert.equal(dayOf.minutes, 5)
+  assert.equal(dayOf.minutes, 15)
   // after the date: back to steady
   assert.equal(pick(w, ctx('2026-11-09', 'half_term')).key, 'act:english:book:redo', 'its due misses are redone in it')
 })
@@ -244,8 +246,8 @@ test('due misses: redone in the session (steady: its section; countdown: all), w
   const step = p.steps.find((s) => /^redo/.test(s.what))
   assert.match(step.what, /redo 1 due English miss without looking \(comma splice\)/)
   assert.equal(p.minutes, 75)
-  const c = pick({ ...w, retake: { goalId: 'G', date: '2026-11-07' } }, ctx(HALF, 'half_term'))
-  assert.match(c.steps.at(-1).what, /redo 1 due miss without looking/)
+  const c = E.actPicks({ ...w, retake: { goalId: 'G', date: '2026-11-07' } }, ctx(HALF, 'half_term'))
+  assert.match(c.at(-1).steps.at(-1).what, /redo 1 due miss without looking/)
 })
 
 test('nothing set up = no ACT; ACT done today = nothing more today', () => {

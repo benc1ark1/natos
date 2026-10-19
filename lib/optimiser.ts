@@ -5,7 +5,7 @@
 // sleep (free time already stops at the night routine) and Whoop. Upper 2× or 3× is decided by trying both: 3× only
 // when it fits without hurting heavy lower and speed. Stretching units go in afterwards, where it's easy. Every rule is
 // a weighted guideline (his optimiser weights), never a hard block. Pure and deterministic: no database, no clock, no AI.
-import { addDays, dowShort, isoDow, minutesOf } from './time'
+import { addDays, daysBetween, dowShort, isoDow, minutesOf } from './time'
 import { assess, costOf, dayLoads, loadOfIntensity, planLoad, weightsOf, type DayLoad, type LoadNeed, type LoadPlaced, type LoadPlan, type LoadSession, type LoadWorld, type Pin, type Where } from './load'
 import { loadRank } from './training'
 import {
@@ -195,8 +195,12 @@ export function optimise(w: OptWorld, opts: { only?: string[] | null; pins?: Map
   const hasUpper = required.some((n) => n.type === 'upper') || extraUpper.length > 0
   const asRequired = (list: LoadNeed[]) => list.map(({ skipCost: _s, ...n }) => n)
   if (opts.upperCount != null) {
-    const wanted = Math.max(0, opts.upperCount - required.filter((n) => n.type === 'upper').length - doneU)
-    needs = [...base, ...asRequired(extraUpper.slice(0, wanted))]
+    const reqU = required.filter((n) => n.type === 'upper')
+    const wanted = Math.max(0, opts.upperCount - reqU.length - doneU)
+    // his choice ("upper 3× until 1 Nov") can be more than his set-up's usual number: more of the same session
+    const template = extraUpper[0] ?? reqU[0]
+    const more = template ? Array.from({ length: Math.max(0, wanted - extraUpper.length) }, (_, i) => ({ ...template, key: `${template.session}#x${i + 1}`, preferred: null })) : []
+    needs = [...base, ...asRequired([...extraUpper, ...more].slice(0, wanted))]
     chosen = run(needs)
     const count = chosen.placed.filter((x) => x.type === 'upper').length + doneU
     if (hasUpper) upper = { count, reason: `${count}× (your choice)` }
@@ -240,7 +244,31 @@ export function optimise(w: OptWorld, opts: { only?: string[] | null; pins?: Map
   const alt = opts.compare !== false ? baselinePlan(w, needs, world) : null
   if (alt && !pins.size && alt.cost < chosen.cost - 1) chosen = alt
   chosen = spaceUppers(chosen, w, pins, needs)
-  if (upper) upper = { ...upper, count: chosen.placed.filter((x) => x.type === 'upper').length + (w.done.get('upper') ?? 0) }
+  // his choice ("upper 3×"): an upper the spacing took out is tried again on each day (the others may move to keep
+  // 48 h between them: the cheapest week that keeps it); football, Owen's days and his fixed sessions stay as they are
+  if (opts.upperCount != null) {
+    const isUpper = (x: { type: string }) => x.type === 'upper'
+    for (let tries = 0; tries < 3 && chosen.placed.filter(isUpper).length + doneU < opts.upperCount; tries++) {
+      const have = chosen.placed.filter(isUpper)
+      const missing = needs.find((n) => isUpper(n) && !have.some((x) => x.key === n.key))
+      if (!missing) break
+      let best: LoadPlan | null = null
+      for (let d = w.from; d <= w.to; d = addDays(d, 1)) {
+        if (d < w.today) continue
+        const p = new Map(pins).set(missing.key, { date: d, start: null })
+        const r = spaceUppers(run(needs, p), w, p, needs)
+        if (r.placed.some((x) => x.key === missing.key) && r.placed.filter(isUpper).length > have.length && (!best || r.cost < best.cost)) best = r
+      }
+      if (!best) break
+      chosen = best
+    }
+  }
+  if (upper) {
+    const count = chosen.placed.filter((x) => x.type === 'upper').length + (w.done.get('upper') ?? 0)
+    // his choice that the week can't fit: say how many and why (never "3×" when 2 are planned)
+    const short = opts.upperCount != null && count < opts.upperCount
+    upper = { ...upper, count, reason: short ? `${count}× this week (you asked for ${opts.upperCount}×): upper body needs ${w.settings.upperRecoveryH} h between sessions, and no other day fits` : upper.reason }
+  }
   // stretching and other flexible units: where it's easy, after everything else
   const flexible = flexibleUnits(w, chosen, opts.only ?? null)
   const placed = [...chosen.placed, ...flexible].sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))

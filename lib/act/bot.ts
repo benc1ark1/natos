@@ -573,7 +573,7 @@ function modeLine(rows: ActRows, today: string): string {
   const m = actMode(w)
   if (m.mode === 'countdown') {
     const top = m.daysLeft <= 21 ? 'top priority now' : `top priority from ${day(m.topFrom)}`
-    return `🔥 Countdown: retake <b>${day(m.date)}</b> · ${m.daysLeft === 0 ? 'today' : m.daysLeft === 1 ? 'tomorrow' : `${m.daysLeft} days`} (${top}). Daily timed English + every miss against its rule · Reading / Maths alternate · mock on ${DOW_NAMES[s.mockDow - 1]}s · light day before`
+    return `🔥 Countdown: retake <b>${day(m.date)}</b> · ${m.daysLeft === 0 ? 'today' : m.daysLeft === 1 ? 'tomorrow' : `${m.daysLeft} days`} (${top}). Holidays: ${Math.round(s.countdownHolidayMin / 6) / 10} h a day, full timed tests ${s.mockDows.map((d) => DOW_NAMES[d - 1]).join(' + ')} (reviewed straight after). School weeks: daily timed English + every miss against its rule · Reading / Maths alternate · mock on ${DOW_NAMES[s.mockDows[0] - 1]}s · light day before`
   }
   // a retake that has passed with no real score logged since: ask for it (once it's logged, this goes)
   const past = rows.goals.filter((g) => g.target_date < today).sort((a, b) => a.target_date.localeCompare(b.target_date)).at(-1)

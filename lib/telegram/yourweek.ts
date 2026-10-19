@@ -33,6 +33,13 @@ import { schoolDays, withSchool, type SchoolWindow } from '../school'
 import { courses as mathsCourses, weekBlocks } from '../maths'
 import { mathsWorld } from './views-more'
 import { weekRulesLine } from '../tracker/bot-data'
+import { loadActWorld } from '../act/data'
+import { actPicks } from '../act/engine'
+import { actTaskMinutes, actTasksOn, isActTask } from '../act/tasks'
+import { dayMode } from '../today/holidays'
+
+/** The "why" on the ACT blocks the app plans itself (so a re-fit knows them without asking the AI again). */
+const ACT_WHY = 'ACT plan'
 
 export type YourWeekDay = {
   date: string; mental: 'low' | 'med' | 'high'; mentalTotal: number; physical: 'rest' | 'low' | 'med' | 'high'; physicalTotal: number
@@ -95,25 +102,41 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
   const maths = await mathsWorld(sb, data)
   const mathsIds = new Set(mathsCourses(maths).map((c) => c.id))
   const isMaths = (it: PlanItem) => (it.ref?.kind === 'task' && mathsIds.has(data.tasks.find((t) => t.id === it.ref!.id)?.subject_id ?? '')) || /^(📝|🔥|🚀) /.test(it.title)
+  // ACT: planned by code, the same as Today (lib/act/engine.ts: the retake countdown, holidays, test days), with his own
+  // ACT tasks on the days he gave them (their minutes are part of that day's ACT time)
+  const act = await loadActWorld(sb, data.today).catch(() => null)
+  const isAct = (it: PlanItem) => it.why === ACT_WHY || /\bACT\b/.test(it.title)
+    || (it.ref?.kind === 'task' && isActTask(data.tasks.find((t) => t.id === it.ref!.id) ?? { title: '', subject_id: null }, act?.subjectId))
+  const actItems = (date: string): PlanItem[] => {
+    if (!act) return []
+    const picks = actPicks(act, { date, dow: isoDow(date), mode: dayMode(data.planning, date), studyMinutes: 0, actTaskMin: actTaskMinutes(data.tasks, date, act.subjectId) })
+    return [
+      ...picks.map((p): PlanItem => ({ title: p.title, minutes: p.minutes, kind: p.heavy ? 'focus' : 'light', ref: null, why: ACT_WHY })),
+      ...actTasksOn(data.tasks, date, act.subjectId).map((t): PlanItem => ({ title: t.title, minutes: t.duration_minutes ?? 30, kind: 'focus', ref: { kind: 'task', id: t.id }, why: ACT_WHY })),
+    ]
+  }
   if (!studyItems) {
-    const res = await makeWeekPlan({ days, words: `${words}\nStudy preferences: best focus time ${more.focusBest}; study blocks at most ${more.maxBlockMin} minutes.\nMaths and Further Maths (their homework, tests and topics) are planned by the app itself: don't add any maths or further maths items.`, previous: opts.previous ?? null }, ctx, opts.onUsage)
+    const res = await makeWeekPlan({ days, words: `${words}\nStudy preferences: best focus time ${more.focusBest}; study blocks at most ${more.maxBlockMin} minutes.\nMaths and Further Maths (their homework, tests and topics) are planned by the app itself: don't add any maths or further maths items.\nACT (its practice tests, sections, misses and his ACT tasks) is planned by the app itself: don't add any ACT items.`, previous: opts.previous ?? null }, ctx, opts.onUsage)
     if (!res.ok) return { message: `⚠️ ${res.error} Nothing planned.` }
     const gameDays = new Set(plan.days.filter((d) => d.sessions.some((x) => x.fixed && /game|match/i.test(x.title))).map((d) => d.date))
     const mb = weekBlocks(maths, days.map((d) => ({ date: d.date, skip: gameDays.has(d.date) })))
     studyItems = days.map((d) => ({ date: d.date, items: [
       ...(mb.get(d.date) ?? []).map((b): PlanItem => ({ title: b.title, minutes: b.minutes, kind: 'focus', ref: b.taskId ? { kind: 'task', id: b.taskId } : null, why: b.why })),
-      ...(res.days.find((x) => x.date === d.date)?.items ?? []).filter((it) => !isMaths(it)),
+      ...actItems(d.date),
+      ...(res.days.find((x) => x.date === d.date)?.items ?? []).filter((it) => !isMaths(it) && !isAct(it)),
     ] }))
     note = res.note; pushBack = res.pushBack
   }
   const blocks: Block[] = plan.placed.map(blockOf)
   const unplaced: PlanPayload['unplaced'] = []
   for (const d of days) {
-    const all = (studyItems.find((x) => x.date === d.date)?.items ?? []).map((it) => ({ ...it, minutes: Math.min(it.minutes, more.maxBlockMin) }))
+    // (an ACT block keeps its length: a full timed test is one sitting; its minutes come on top of the day's focus limit)
+    const all = (studyItems.find((x) => x.date === d.date)?.items ?? []).map((it) => ({ ...it, minutes: isAct(it) ? it.minutes : Math.min(it.minutes, more.maxBlockMin) }))
+    const actMin = all.filter((it) => isAct(it) && it.kind === 'focus').reduce((n, it) => n + it.minutes, 0)
     // never plan a task on a day after its deadline
     const late = all.filter((it) => it.ref?.kind === 'task' && (() => { const r = [...ctx.refs.values()].find((x) => x.id === it.ref!.id); return !!r?.deadline && r.deadline < d.date })())
     unplaced.push(...late.map((it) => ({ title: it.title, minutes: it.minutes, reason: 'that’s after its deadline', date: d.date })))
-    const placed = placeItems(all.filter((it) => !late.includes(it)), slots.get(d.date) ?? [], w.settings, { budget: d.budget, energy: d.energy })
+    const placed = placeItems(all.filter((it) => !late.includes(it)), slots.get(d.date) ?? [], w.settings, { budget: d.budget == null ? null : d.budget + actMin, energy: d.energy })
     blocks.push(...placed.blocks.filter((b) => planProblems([b], slots.get(d.date) ?? [], w.settings, null).length === 0).map((b) => ({ ...b, date: d.date })))
     unplaced.push(...placed.unplaced.map((u) => ({ ...u, date: d.date })))
   }

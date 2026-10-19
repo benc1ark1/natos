@@ -25,7 +25,8 @@ export type ActSettings = {
   schoolDays: number[]         // ISO weekdays of the school-week sessions (3 a week)
   flashMin: number             // the daily grammar flashcards (Anki) (10; 0 = off)
   fullTestDow: number          // steady holidays: the weekly full timed test (the review is the next day)
-  mockDow: number              // countdown: the mid-week full timed mock (its review is the next day)
+  mockDows: number[]           // countdown: the full timed tests (holidays: each reviewed straight after; school weeks: the first, reviewed the next day)
+  countdownHolidayMin: number  // countdown: ACT a day in the holidays (240)
   science: boolean             // the full test includes Science
 }
 

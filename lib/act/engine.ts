@@ -6,10 +6,13 @@
 // Steady (no date):   holidays ~75 min a day rotating English / Reading / Maths (weighted to the weakest section vs
 //                     the goal), one full timed test a week (actTestDay) + its review the next day;
 //                     school weeks 30 min × 3 (actSchoolDays) + the flashcards; other days just the flashcards.
-// Countdown (date):   every day a timed English section + every miss reviewed against its rule; a timed Reading or
-//                     Maths section alternating (weighted to the weaker); a full timed mock mid-week (actMockDay) and
-//                     its review the next day; the day before: light (rules + misses list + sleep); tier 2 in the
-//                     last 21 days, else tier 7.
+// Countdown (date):   holidays: his ACT time a day (actCountdownHolidayMin, 4 h) as two blocks: a full timed test on
+//                     the test days (actMockDays: Tue + Thu) reviewed straight after, else every section timed + marked
+//                     (English first, the weakest next) + his misses; the ACT tasks he put on a day are part of its time.
+//                     School weeks: every day a timed English section + every miss reviewed against its rule; a timed
+//                     Reading or Maths section alternating (weighted to the weaker); a full timed mock on the first
+//                     test day and its review the next day. Always: the day before is light (rules + misses list +
+//                     sleep), the retake day has nothing timed; tier 2 in the last 21 days, else tier 7.
 import { TIER, type DayContext, type Pick, type Tier } from '../plan-items'
 import { addDays, daysBetween, dowShort, shortDate } from '../time'
 import { isRunning } from '../tracker/programmes'
@@ -133,9 +136,10 @@ export function steadyDay(world: ActWorld, day: Pick_<DayContext, 'dow' | 'mode'
 /** Countdown: this weekday's shape (the mock and its review, else English + the alternating section). */
 export function countdownDay(world: ActWorld, dow: number): { kind: 'mock' } | { kind: 'mock_review' } | { kind: 'sections'; second: ActSection } {
   const s = world.settings ?? DEFAULT_ACT_SETTINGS
-  if (dow === s.mockDow) return { kind: 'mock' }
-  if (dow === nextDow(s.mockDow)) return { kind: 'mock_review' }
-  const days = WEEK.filter((d) => d !== s.mockDow && d !== nextDow(s.mockDow))
+  const mock = s.mockDows[0] ?? 3
+  if (dow === mock) return { kind: 'mock' }
+  if (dow === nextDow(mock)) return { kind: 'mock_review' }
+  const days = WEEK.filter((d) => d !== mock && d !== nextDow(mock))
   return { kind: 'sections', second: rotation(['reading', 'maths'], world.scores, world.goal, days.length)[days.indexOf(dow)] }
 }
 type Pick_<T, K extends keyof T> = { [P in K]: T[P] }
@@ -345,7 +349,8 @@ export function actPicks(world: ActWorld, day: DayContext): Pick[] {
   const retake = world.retake && world.retake.date >= date ? world.retake : null
   if (!retake && !world.books.length) return []          // nothing set up yet: no ACT
   const done = date === world.today ? world.doneToday : []   // what's done counts for today only (a plan for another day ignores it)
-  if (done.includes('act:day')) return []                  // ACT work already done today
+  // ACT work already done today (on a holiday test day the test's score comes before its review: see holidayCountdown)
+  if (done.includes('act:day') && !(retake && day.mode === 'half_term')) return []
 
   const flash = flashcards(world, date)
   const budget = day.studyMinutes > 0 ? day.studyMinutes - (flash?.minutes ?? 0) : Infinity
@@ -367,7 +372,8 @@ export function actPicks(world: ActWorld, day: DayContext): Pick[] {
     const why = `${when}${w && w.gap > 0 ? ` · weakest: ${SECTION_LABEL[w.section]} ${w.score} vs ${world.goal}` : ''}`
     if (left === 0) {
       return make({ key: 'act:test:day', title: 'ACT retake today 🍀', open: 'Nothing new: a few easy flashcards to warm up, then go. Afterwards send “real ACT: E.. M.. R.. S..”',
-        steps: [{ minutes: 5, what: 'warm-up: a few easy flashcards, nothing new' }], why: 'today’s the retake', done: { kind: 'act', section: 'full' } }, TIER.test, { noFlash: true })
+        // (15 min: long enough to have its own place in the day, so the retake is never left off Today or the week)
+        steps: [{ minutes: 15, what: 'warm-up: a few easy flashcards, nothing new' }], why: 'today’s the retake', done: { kind: 'act', section: 'full' } }, TIER.test, { noFlash: true })
     }
     if (left === 1) {
       const rules = rulesOf(world.misses)
@@ -377,6 +383,7 @@ export function actPicks(world: ActWorld, day: DayContext): Pick[] {
         steps: [{ minutes: LIGHT_MIN, what: 'rules list + misses list, nothing timed' }], why: 'the day before: light, then sleep', done: { kind: 'act', section: 'review' },
       }, TIER.test)
     }
+    if (day.mode === 'half_term') return holidayCountdown(world, day, { flash, tier, when, why, make })
     const shape = countdownDay(world, day.dow)
     if (shape.kind === 'mock') {
       return make({ key: 'act:full:mock', title: 'ACT mock: full timed test', open: fullTestOpen(world), steps: [{ minutes: fullTestMin(world), what: 'full timed mock, one sitting' }],
@@ -442,6 +449,62 @@ export function actPicks(world: ActWorld, day: DayContext): Pick[] {
   if (extra) steps = [...steps, extra]
   else if (rest > 0) steps = [...steps.slice(0, -1), { ...steps.at(-1)!, minutes: steps.at(-1)!.minutes + rest }]   // the spare minutes go to the main work
   return make({ ...w, steps, why: w.why ?? scoreWhy(world, section) }, TIER.leftover, { optional: extra ? [[extra]] : [] })
+}
+
+/**
+ * A holiday in the countdown: his ACT time for the day (4 h), minus the ACT tasks he put on this day, as two blocks (one
+ * block can't be longer than 4 h, and a break between them helps): a test day is the full timed test, then its review
+ * straight after; any other day is every section timed and marked (English first, then the weakest), then his misses.
+ */
+function holidayCountdown(world: ActWorld, day: DayContext, x: { flash: Step | null; tier: Tier; when: string; why: string; make: (w: Work, tier: Tier, opts?: { optional?: Step[][]; noFlash?: boolean }) => Pick[] }): Pick[] {
+  const s = world.settings ?? DEFAULT_ACT_SETTINGS
+  const date = day.date
+  const total = Math.min(s.countdownHolidayMin, day.studyMinutes > 0 ? day.studyMinutes : Infinity) - (day.actTaskMin ?? 0)
+  const room = total - (x.flash?.minutes ?? 0)
+  if (room < 30) {
+    // his own ACT tasks fill today's ACT time: just the flashcards with them
+    return x.flash ? x.make({ key: 'act:flashcards:daily', title: 'ACT grammar flashcards', open: 'Anki: your ACT grammar deck (the cards due today)', steps: [], why: `${x.when} · your ACT tasks fill the rest of today’s ACT time`, done: { kind: 'act', section: 'flashcards' } }, x.tier) : []
+  }
+  const due = dueMisses(world, date)
+  const full = fullTestMin(world)
+  const dayDone = date === world.today && world.doneToday.includes('act:day')   // a score logged (the test) or a chapter done today
+  if (s.mockDows.includes(day.dow) && room >= full + 30) {
+    const test = dayDone ? [] : x.make({ key: 'act:full:mock', title: 'ACT full timed test', open: fullTestOpen(world), steps: [{ minutes: full, what: 'full timed test, one sitting' }],
+      why: `${x.when} · a test day: review it straight after`, done: { kind: 'act', section: 'full' }, heavy: true }, x.tier, { noFlash: true })
+    const left = room - full
+    const redo = due.length && left >= MOCK_REVIEW_MIN + REDO_MIN ? missStep(world, date, null, REDO_MIN) : null
+    const review: Step = { minutes: left - (redo?.minutes ?? 0), what: 'review the test straight after: every miss → its rule or reason, logged (“ACT miss: english Q12 comma splice — …”)' }
+    return [...test, ...x.make({ key: 'act:review:mock', title: 'ACT: review today’s test',
+      open: 'Straight after the test: mark it, then every miss → its rule or reason, logged; redo the ones you can’t explain. Then send “ACT practice: E.. M.. R..”',
+      steps: [review, ...(redo ? [redo] : [])], why: `${x.when} · the review straight after the test`, done: { kind: 'act', section: 'review' } }, x.tier)]
+  }
+  if (dayDone) return []
+  // every section, timed and marked: English first, then the weakest of the others
+  const order: ActSection[] = ['english', ...byNeed(world.scores, world.goal, ['reading', 'maths']), ...(s.science ? ['science' as ActSection] : [])]
+  const pair = (sec: ActSection): Step[] => [
+    { minutes: SECTION_MIN[sec], what: `timed ${SECTION_LABEL[sec]} section (${SECTION_MIN[sec]} min)` },
+    { minutes: REVIEW_MIN, what: `mark it: every ${SECTION_LABEL[sec]} miss against its rule, logged` },
+  ]
+  let a = [...pair(order[0]), ...pair(order[1])]
+  let rest = order.slice(2)
+  // misses that are due are always redone (their 10 min come before Science)
+  const redoMin = due.length ? REDO_MIN : 0
+  const sizeOf = (r: ActSection[]) => r.reduce((n, sec) => n + SECTION_MIN[sec] + REVIEW_MIN, 0)
+  while (rest.length && sum(a) + sizeOf(rest) + redoMin > room) rest = rest.slice(0, -1)   // a short day: Science goes first
+  if (sum(a) > room) a = pair('english')
+  let b: Step[] = rest.flatMap(pair)
+  const spare = room - sum(a) - sum(b)
+  const misses = spare >= 10 ? missStep(world, date, null, Math.min(spare, 45)) : null
+  if (misses) b = [...b, misses]
+  const label = (r: ActSection[]) => r.map((sec) => SECTION_LABEL[sec]).join(' + ')
+  const shownA = a.length > 2 ? [order[0], order[1]] : [order[0]]
+  const first = x.make({ key: 'act:english:timed', title: `ACT: timed ${label(shownA)}`,
+    open: `Your next official practice test, section by section: ${shownA.map((sec) => `${SECTION_LABEL[sec]} (timed, ${SECTION_MIN[sec]} min)`).join(' → ')}, each marked against its rules`,
+    steps: a, why: x.why, done: { kind: 'act', section: 'english' }, heavy: true }, x.tier)
+  if (!b.length) return first
+  return [...first, ...x.make({ key: `act:sections:${rest[0] ?? 'misses'}`, title: rest.length ? `ACT: timed ${label(rest)}${misses ? ' + misses' : ''}` : 'ACT: your misses',
+    open: rest.length ? `${rest.map((sec) => `${SECTION_LABEL[sec]} (timed, ${SECTION_MIN[sec]} min)`).join(' → ')}, each marked; then your misses` : 'Your ACT misses: redo the due ones without looking, re-read the rules',
+    steps: b, why: x.why, done: { kind: 'act', section: rest[0] ?? 'review' }, heavy: rest.length > 0 }, x.tier, { noFlash: true })]
 }
 
 // ---------------------------------------------------------------------------

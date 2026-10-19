@@ -111,7 +111,8 @@ export async function loadActRows(sb: SupabaseClient, today: string): Promise<Ac
 
   // done today: a ticked ACT pick (Today), an ACT book chapter finished today, or a practice score logged today
   const doneToday = new Set<string>()
-  for (const b of (blocks.error ? [] : blocks.data ?? []) as { pick_key: string; status: string }[]) if (b.status === 'done') { doneToday.add(b.pick_key); doneToday.add('act:day') }
+  // (each ticked pick by its key: a holiday countdown day has two, and ticking the test mustn't hide its review)
+  for (const b of (blocks.error ? [] : blocks.data ?? []) as { pick_key: string; status: string }[]) if (b.status === 'done') doneToday.add(b.pick_key)
   // (a skipped chapter isn't work, and a College Panda chapter test with full marks moves straight on to the next test)
   if (books.some((b) => roleOf(b) !== 'flashcards' && b.items.some((i) => i.doneOn === today && i.status === 'done'))) doneToday.add('act:day')
   if (scoreRows.some((s) => s.kind !== 'real' && s.createdOn === today)) doneToday.add('act:day')
@@ -119,7 +120,7 @@ export async function loadActRows(sb: SupabaseClient, today: string): Promise<Ac
   const world: ActWorld = {
     today, retake: next ? { goalId: next.id, date: next.target_date } : null, goal: set.goal,
     scores: scoreRows.map(({ createdOn: _c, ...s }) => s), books, misses, doneToday: [...doneToday],
-    settings: { halfTermMin: set.halfTermMin, schoolMin: set.schoolMin, schoolDays: set.schoolDays, flashMin: set.flashMin, fullTestDow: set.fullTestDow, mockDow: set.mockDow, science: set.science },
+    settings: { halfTermMin: set.halfTermMin, schoolMin: set.schoolMin, schoolDays: set.schoolDays, flashMin: set.flashMin, fullTestDow: set.fullTestDow, mockDows: set.mockDows, countdownHolidayMin: set.countdownHolidayMin, science: set.science },
     subjectId: liveSubjectId,
   }
   return {
