@@ -1,0 +1,3 @@
+-- Queue item 7: the weekly check (overnight build, 19 Oct 2026).
+-- Safe to run more than once. Nothing is dropped or deleted.
+-- (Empty until item 7 adds its tables; if it stays empty there is nothing to run.)

@@ -4,9 +4,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { checkActions } from '../lib/telegram/actions.ts'
 
-const ROOT = new URL('..', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const TODAY = '2026-10-10'   // Saturday
 const task = (o) => ({
   id: o.id, user_id: 'u', category_id: null, subject_id: null, details: null, priority: 'medium', status: 'this_week', due_at: null,
@@ -125,7 +126,9 @@ test('only real refs of the right kind; at most 16 changes (a long message about
 
 test('no delete code in the bot, apart from the known exceptions', () => {
   const dir = join(ROOT, 'lib/telegram')
-  const found = readdirSync(dir).flatMap((f) => readFileSync(join(dir, f), 'utf8').split('\n').map((l, i) => [f, i + 1, l]))
+  // every file, including the plug-ins (lib/telegram/plugins/…)
+  const files = readdirSync(dir, { recursive: true }).map(String).filter((f) => /\.tsx?$/.test(f))
+  const found = files.flatMap((f) => readFileSync(join(dir, f), 'utf8').split('\n').map((l, i) => [f, i + 1, l]))
     .filter(([, , l]) => /\.delete\(\)|deleteMessage|\bdrop table\b/i.test(l))   // a database delete is .delete() with nothing inside
     .map(([f, , l]) => `${f}: ${l.trim().slice(0, 200)}`)
   assert.deepEqual(found.map((x) => x.split(':')[0]).sort(), ['cards.ts', 'sent.ts', 'ticks.ts'], found.join('\n'))

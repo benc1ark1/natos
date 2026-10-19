@@ -10,10 +10,11 @@ import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { secretMatches, bearer, isOwnerUpdate } from '../lib/telegram/guard.ts'
 import { timeOf, todayISO } from '../lib/time.ts'
 
-const ROOT = new URL('..', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const OWNER = 111
 const OTHER = 222
 const WEBHOOK_SECRET = 'test-webhook-secret-0123456789abcdef'

@@ -29,6 +29,7 @@ import { recordSuggestion } from './roi'
 import type { Gap } from '../gaps'
 import { MEMORY_MINUTES, plain, remember, say, type Ref } from './turns'
 import { draftReply } from '../mail/draft'
+import { pluginAfterApply, pluginTap } from './plugins'
 
 export type Pending = {
   id: string; kind: 'capture' | 'fact' | 'action' | 'plan' | 'idea' | 'type'; text: string
@@ -316,6 +317,14 @@ const TAP_RULES: Record<string, { kinds: Pending['kind'][]; from: Pending['statu
 }
 
 export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
+  // a plug-in's own buttons ("trk:…", lib/telegram/plugins): it answers the tap itself
+  const owned = pluginTap(q.data ?? '')
+  if (owned && q.id) {
+    await answerTap(q.id)
+    await remember(sb, 'nat', `(tapped ${(q.data ?? '').split(':')[0]})`, { intent: 'tap' })
+    await owned(sb, chatId, q.data ?? '', q.message?.message_id)
+    return
+  }
   // ✍️ Draft a reply (under an email alert): no card behind it, just the email (lib/mail/draft.ts)
   const draft = (q.data ?? '').match(/^d:([0-9a-f-]{36})$/)
   if (draft && q.id) {
@@ -453,7 +462,8 @@ export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
     const moved = rippleApplied.length ? `\n<i>…and ${rippleApplied.length} thing${rippleApplied.length > 1 ? 's' : ''} moved in your plan.</i>` : ''
     const unanswered = (card.payload.asks ?? []).map((q) => q.question)
     const notDone = unanswered.length ? `\n<i>Not saved (no answer): ${esc(unanswered.join('; '))}. Tell me when you know.</i>` : ''
-    await tell(`✅ <b>Done</b>\n${actions.map((a) => `• ${a.line}`).join('\n')}${moved}${notDone}`, [[{ text: '↩️ Undo', callback_data: `u:${id}` }]], refs)
+    const next = await pluginAfterApply(sb, res.applied, todayISO()).catch(() => [] as string[])
+    await tell(`✅ <b>Done</b>\n${actions.map((a) => `• ${a.line}`).join('\n')}${moved}${notDone}${next.length ? `\n${next.join('\n')}` : ''}`, [[{ text: '↩️ Undo', callback_data: `u:${id}` }]], refs)
     await pinned()
     const roi = (card.payload as { roi?: { key: string; title: string; savesMin: number; weekStart: string } }).roi
     if (roi) await recordSuggestion(sb, roi, roi.weekStart, 'applied')

@@ -23,3 +23,10 @@ next-env.d.ts
 
 # data backups (Export my data): personal, never commit
 nat-os-backup-*.json
+
+# local test stack (tests/localdb): downloaded tools and database files
+tests/localdb/.bin/
+tests/localdb/.data/
+
+# spreadsheets (personal study data; import them in the app, never commit)
+*.xlsx

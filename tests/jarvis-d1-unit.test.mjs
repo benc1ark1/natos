@@ -116,7 +116,8 @@ test('the card: a timeline, what didn’t fit, and what ✅ will also do', () =>
 test('the database accepts every message type and card kind the bot uses (latest SQL wins)', async () => {
   const { readFileSync, readdirSync } = await import('node:fs')
   const { INTENTS } = await import('../lib/telegram/brain.ts')
-  const dir = new URL('../supabase/', import.meta.url).pathname
+  const { fileURLToPath } = await import('node:url')
+  const dir = fileURLToPath(new URL('../supabase/', import.meta.url))
   const files = readdirSync(dir).filter((f) => /^jarvis-.*\.sql$/.test(f)).sort()
   const lastList = (name) => {
     let found = null
