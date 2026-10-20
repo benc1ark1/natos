@@ -25,6 +25,7 @@ import { deadlineOf, deadlineLabel, sortByDate } from '../tasks'
 import { addDays, dateISOOf, daysBetween, dowShort, hhmm, shortDate, timeOf, todayISO, weekStartISO, zonedToUTC } from '../time'
 import type { AskAnswer, PlanItem, PlanRefKind, Turn, WeekPlan } from './types'
 import { pluginSnapshots } from '../telegram/plugins'
+import { holidayChanges } from '../today/holidays'
 export { checkinRange } from './week'
 
 export { CHAT_MODEL as ASK_MODEL } from '../ai/models'
@@ -104,9 +105,11 @@ export async function loadPlannerContext(sb: SupabaseClient): Promise<PlannerCon
   const goalIds = new Set(activeGoals.map((g) => g.id))
   // Open tasks: only the next prep session of each live test (leftovers of past tests are left out).
   const open = sortByDate(nextSessionsOnly(((tasks.data ?? []) as Task[]).filter((t) => !t.is_system || (t.goal_id && goalIds.has(t.goal_id)))))
-  const chs = (changes.data ?? []) as EventException[]
+  const saved = (changes.data ?? []) as EventException[]
   // read-only sessions he asked the app to ignore are left out; this week's game (his set-up) is added
-  const evs = planningEvents((events.data ?? []) as EventRow[], chs, profile.error ? null : profile.data?.planning ?? null, weekStart, addDays(end, 7))
+  const evs = planningEvents((events.data ?? []) as EventRow[], saved, profile.error ? null : profile.data?.planning ?? null, weekStart, addDays(end, 7))
+  // holidays: no school (his repeating School and the Google copies)
+  const chs = holidayChanges(evs, saved, profile.error ? null : profile.data?.planning ?? null, weekStart, addDays(end, 7))
   const tgs = (targets.data ?? []) as WeeklyTarget[]
   const lgs = (logs.data ?? []) as TargetLog[]
 

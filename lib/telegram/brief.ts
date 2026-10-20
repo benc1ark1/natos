@@ -28,6 +28,7 @@ import { boundsOf, hm, parseSessionTitle } from '../setup'
 import type { Button } from './api'
 import type { CostRow } from '../load'
 import { loadCosts } from '../training-data'
+import { holidayChanges } from '../today/holidays'
 
 export type DayData = {
   today: string
@@ -68,8 +69,10 @@ export async function loadDay(sb: SupabaseClient, today: string): Promise<DayDat
   const live = new Set(goalRows.map((g) => g.id))
   // only the next prep session of each live test, like Home
   const open = nextSessionsOnly(rows<Task>(tasks, 'tasks').filter((t) => !t.is_system || (t.goal_id && live.has(t.goal_id))))
-  const ch = rows<EventException>(changes, 'calendar changes')
-  const evs = planningEvents(rows<EventRow>(events, 'events'), ch, planning, addDays(weekStart, -7), addDays(today, 28))
+  const saved = rows<EventException>(changes, 'calendar changes')
+  const evs = planningEvents(rows<EventRow>(events, 'events'), saved, planning, addDays(weekStart, -7), addDays(today, 28))
+  // holidays: no school (his repeating School and the Google copies) in anything worked out from this
+  const ch = holidayChanges(evs, saved, planning, addDays(weekStart, -7), addDays(today, 28))
   const tests = goalRows.filter((g) => g.kind === 'test' && g.target_date).map((g) => ({ title: g.title, target_date: g.target_date! }))
   return {
     today, tasks: open, events: evs, changes: ch,
