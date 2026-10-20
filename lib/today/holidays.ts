@@ -2,6 +2,7 @@
 // no school that day (his school events are skipped), and the morning message waits for his holiday wake time.
 // Pure: no database, no clock.
 import { expandEvents, isSchool } from '../events'
+import { schoolDays } from '../school'
 import { setting } from '../settings'
 import { addDays, isoDow, minutesOf } from '../time'
 import type { EventException, EventRow } from '../types'
@@ -46,16 +47,22 @@ export function morningAt(planning: unknown, date: string): string {
 
 /**
  * School on holidays, skipped: one "cancelled" change per school occurrence on a holiday date, added to the real
- * changes (lib/events.ts expandEvents keeps them out). Nothing is saved: it's only how the day is worked out.
+ * changes (lib/events.ts expandEvents keeps them out). Every school event goes: his repeating School, and the copies
+ * from Google (School blocks and his timetable's lessons, as lib/school.ts reads them). A one-off event he added
+ * himself (a trip, a mock) still happens. Nothing is saved: it's only how the day is worked out.
  */
 export function holidayChanges(events: EventRow[], changes: EventException[], planning: unknown, from: string, to: string): EventException[] {
-  const ranges = holidaysOf(planning).filter((r) => r.to >= from && r.from <= to)
+  const ranges = holidaysOf(planning).filter((r) => r.to >= addDays(from, -1) && r.from <= addDays(to, 1))
   if (!ranges.length) return changes
   const inHoliday = (d: string) => ranges.some((r) => r.from <= d && d <= r.to)
+  const a = addDays(from, -1), b = addDays(to, 1)
+  // the Google school copies: what the week and day views fold into "🏫 School" (blocks and timetable lessons)
+  const copies = new Set([...schoolDays(events, changes, a, b).values()].flatMap((d) => [...d.hidden]))
+  const own = (e: EventRow) => e.external_source !== 'google' && !!e.starts_at
   const extra: EventException[] = []
-  for (const o of expandEvents(events.filter((e) => isSchool(e)), addDays(from, -1), addDays(to, 1), changes)) {
-    if (o.cancelled || !inHoliday(o.date)) continue
-    if (o.event.starts_at) continue   // a one-off event he added himself (a trip, a mock) still happens
+  for (const o of expandEvents(events, a, b, changes)) {
+    if (o.cancelled || !inHoliday(o.date) || own(o.event)) continue
+    if (!isSchool(o.event) && !copies.has(o.key)) continue
     extra.push({ id: `holiday:${o.event.id}:${o.usualDate}`, event_id: o.event.id, on_date: o.usualDate, cancelled: true, new_date: null, new_start: null, new_end: null, missed: false })
   }
   // a real change for the same occurrence is replaced by the holiday one (it's off either way)

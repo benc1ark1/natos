@@ -303,6 +303,8 @@ test('O18: the first brief after this build brings, in order: the gap questions,
 
 test('O8: “where can I save time?” → suggestions (time saved + trade-off) with ✅ Apply / ✋ Not now, and where the week goes; applied ones change his set-up (Undo)', { skip }, async () => {
   await natsWeek()
+  // a school week (today's date can fall in the default half-term, which has no school)
+  await q(`update profiles set planning = coalesce(planning, '{}'::jsonb) || '{"holidays": "none"}' where user_id = $1`, [chat.users.owner])
   await nat('where can I save time?')
   const m = last()
   show(m)

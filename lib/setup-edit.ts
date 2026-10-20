@@ -2,7 +2,7 @@
 // days, this week's game and read-only sessions to ignore. Each change is checked here and becomes ONE key of
 // profiles.planning (the whole new list or map), so ✅ / ↩️ Undo work like any setting. Nothing is ever removed: a
 // place or session he stops using is archived. Pure: no database.
-import { EQUIPMENT, activePlaces, gameFor, ignoredSessions, owenDays, sessionTimes, sessionTypes, trainingPlaces, findPlace, findSession, daysWords,
+import { EQUIPMENT, activePlaces, gameFor, ignoredSessions, owenDays, holidayOwenDays, sessionTimes, sessionTypes, trainingPlaces, findPlace, findSession, daysWords,
   type DayMap, type DayTimes, type SessionType, type TrainingPlace } from './setup'
 import { newKey } from './lists'
 import { addDays, dowShort, isoDow, shortDate, weekStartISO } from './time'
@@ -125,13 +125,20 @@ export function sessionChange(value: string, planning: unknown): Result {
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 const dowOf = (w: string) => { const i = DAYS.indexOf(w.trim().toLowerCase().slice(0, 3)); return i < 0 ? null : i + 1 }
 
-/** value "speed=tue; heavy_lower=thu; injury=fri; core=sat" (session words or keys), or "clear=yes". */
+/** value "speed=tue; heavy_lower=thu; injury=fri; core=sat" (session words or keys), or "clear=yes". "holiday=yes":
+ *  the days in the holidays instead (they replace the usual days in a holiday week). */
 export function owenChange(value: string, planning: unknown): Result {
-  const kv = kvOf(value)
+  const { holiday, ...kv } = kvOf(value)
+  const hol = yes(holiday)
   const sessions = sessionTypes(planning)
-  if (yes(kv.clear)) return owenDays(planning) ? { change: { key: 'owenDays', title: 'Owen’s days', line: '🗓 Owen’s days: cleared (the planner picks freely)', patch: { owenDays: null } } } : { problem: 'Owen’s days aren’t set' }
-  const map: DayMap = { ...(owenDays(planning) ?? {}) }
-  const times: DayTimes = { ...sessionTimes(planning) }
+  const daysKey = hol ? 'holidayOwenDays' : 'owenDays', timesKey = hol ? 'holidaySessionTimes' : 'sessionTimes'
+  const saved = hol ? holidayOwenDays(planning) : owenDays(planning)
+  if (yes(kv.clear)) {
+    if (!saved) return { problem: hol ? 'no holiday days are set' : 'Owen’s days aren’t set' }
+    return { change: { key: daysKey, title: hol ? 'Holiday days' : 'Owen’s days', line: hol ? '🗓 Holiday days: cleared (the usual days in the holidays too)' : '🗓 Owen’s days: cleared (the planner picks freely)', patch: hol ? { holidayOwenDays: null, holidaySessionTimes: null } : { owenDays: null } } }
+  }
+  const map: DayMap = { ...(saved ?? {}) }
+  const times: DayTimes = { ...sessionTimes(planning, timesKey) }
   const bits: string[] = []
   for (const [k, v] of Object.entries(kv) as [string, string][]) {
     const s = findSession(sessions, k.replace(/_/g, ' '))
@@ -146,7 +153,8 @@ export function owenChange(value: string, planning: unknown): Result {
     bits.push(`${s.name} ${map[s.key].map((d) => `${daysWords([d])}${own[String(d)] ? ` ${own[String(d)]}` : ''}`).join('/')}`)
   }
   if (!bits.length) return { problem: 'which sessions on which days?' }
-  return { change: { key: 'owenDays', title: 'Fixed days', line: `🗓 Fixed days: <b>${esc(bits.join(', '))}</b> <i>(the planner keeps these sessions on them)</i>`, patch: { owenDays: map, sessionTimes: times } } }
+  if (hol) return { change: { key: daysKey, title: 'Holiday days', line: `🗓 In the holidays: <b>${esc(bits.join(', '))}</b> <i>(instead of the usual days in a holiday week)</i>`, patch: { holidayOwenDays: map, holidaySessionTimes: times } } }
+  return { change: { key: daysKey, title: 'Fixed days', line: `🗓 Fixed days: <b>${esc(bits.join(', '))}</b> <i>(the planner keeps these sessions on them)</i>`, patch: { owenDays: map, sessionTimes: times } } }
 }
 
 /** This week's game: value "date=YYYY-MM-DD; leave=09:00; back=15:00", "none=yes", or "usual=yes" (the week starting `weekStart`). */

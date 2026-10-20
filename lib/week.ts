@@ -15,7 +15,7 @@ import { withTravel, type TravelWorld } from './travel'
 import { addDays, isoDow, minutesOf, weekStartISO } from './time'
 import type { EventException, EventRow, TargetLog, WeeklyTarget } from './types'
 import { optimise, setupNeeds, type OptPlan, type OptWorld } from './optimiser'
-import { activePlaces, activeSessions, findSession, owenBaseline, owenDays, parseSessionTitle, sessionTimes } from './setup'
+import { activePlaces, activeSessions, findSession, fixedDaysFor, owenBaseline, parseSessionTitle } from './setup'
 import type { MentalDay } from './mental'
 import { upperWeek } from './setup-edit'
 
@@ -82,6 +82,9 @@ export function optWorldOf(w: WeekWorld, keep: Planned[] = w.planned.filter((b) 
   const schoolEnd = new Map<string, number>()
   for (const sd of schoolDays(w.events, w.changes, w.from, w.to, w.settings.schoolFreePeriods).values()) schoolEnd.set(sd.date, leaveSchool(sd, w.settings))
   const rooms = trainingRooms(w, keep).map((r) => ({ ...r, slots: rhythmCut(r.date, r.slots, more) }))
+  // his fixed days (Owen's): the holiday ones in a holiday week (most of its weekdays are holidays)
+  const days = datesIn(w.from, w.to), weekdays = days.filter((d) => isoDow(d) <= 5), pool = weekdays.length ? weekdays : days
+  const fixed = fixedDaysFor(w.planning, pool.filter((d) => isHoliday(w.planning, d)).length * 2 > pool.length)
   return {
     from: w.from, to: w.to, today: w.today, rooms, fixed: fixedLoad(w), rules: w.rules, settings: more,
     costs: w.costs ?? [], types, heavyUntil: w.settings.heavyUntil, trainingFrom: w.trainingFrom ?? more.trainingFrom,
@@ -93,7 +96,7 @@ export function optWorldOf(w: WeekWorld, keep: Planned[] = w.planned.filter((b) 
     fridayLight: more.fridayLight === 'yes', weekendUpper: true,
     schoolEnd, maxTravel: more.maxTravelMin, fridayFreeFrom: minutesOf(more.fridayFreeFrom),
     weights: { travel: more.wTravel, poorFit: more.wPoorFit, afterSchool: more.wAfterSchool, upperThird: more.wUpperThird },
-    owenDays: owenDays(w.planning), baseline: owenBaseline(w.planning), sessionTimes: sessionTimes(w.planning), ...weekProgress(w),
+    owenDays: fixed.days, baseline: owenBaseline(w.planning), sessionTimes: fixed.times, ...weekProgress(w),
   }
 }
 

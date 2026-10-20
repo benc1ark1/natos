@@ -207,14 +207,28 @@ export const owenDays = (planning: unknown): DayMap | null => dayMap(obj(plannin
 /** A start time for a session on a fixed day ("upper Sat 09:30"): session key → weekday ("1"–"7") → "HH:MM". No time =
  *  the usual (straight after school on a school day). */
 export type DayTimes = Record<string, Record<string, string>>
-export function sessionTimes(planning: unknown): DayTimes {
+export function sessionTimes(planning: unknown, key: 'sessionTimes' | 'holidaySessionTimes' = 'sessionTimes'): DayTimes {
   const out: DayTimes = {}
-  for (const [k, v] of Object.entries(obj(obj(planning).sessionTimes))) {
+  for (const [k, v] of Object.entries(obj(obj(planning)[key]))) {
     if (!KEY.test(k)) continue
     const days = Object.fromEntries(Object.entries(obj(v)).filter(([d, t]) => /^[1-7]$/.test(d) && typeof t === 'string' && HHMM.test(t))) as Record<string, string>
     if (Object.keys(days).length) out[k] = days
   }
   return out
+}
+
+/** His fixed days in the holidays ("in half-term speed is Wed 10:00"): in a holiday week these sessions' days and
+ *  times replace the usual ones; sessions not listed keep their usual days. null = the usual days all year. */
+export const holidayOwenDays = (planning: unknown): DayMap | null => dayMap(obj(planning).holidayOwenDays)
+
+/** The fixed days and times the week planner uses: the holiday ones (where set) in a holiday week. */
+export function fixedDaysFor(planning: unknown, holidayWeek: boolean): { days: DayMap | null; times: DayTimes } {
+  const days = owenDays(planning), times = sessionTimes(planning)
+  const hol = holidayWeek ? holidayOwenDays(planning) : null
+  if (!hol) return { days, times }
+  const holTimes = sessionTimes(planning, 'holidaySessionTimes')
+  for (const k of Object.keys(hol)) { delete times[k]; if (holTimes[k]) times[k] = holTimes[k] }
+  return { days: { ...(days ?? {}), ...hol }, times }
 }
 
 /** Owen's current suggestion (11 Oct): only a starting point to compare against, never assumed right. */
@@ -374,6 +388,7 @@ export function setupForAI(planning: unknown, weekStart: string): string[] {
     'Places he trains (change with setup_set place=…):', ...places.map((p) => `- ${placeWords(p, places)}`),
     'Sessions he needs each week (days are the optimiser’s job; change with setup_set session=…):', ...sessions.map((s) => `- ${sessionWords(s, places)}`),
     `Fixed days (Owen’s sessions and his own; change with owen_days, e.g. "upper=mon, sat 09:30"): ${owen ? Object.entries(owen).map(([k, d]) => `${name(k)} ${d.map((x) => `${DAY3[x - 1]}${sessionTimes(planning)[k]?.[String(x)] ? ` ${sessionTimes(planning)[k][String(x)]}` : ''}`).join('/')}`).join(', ') : 'not settled (ask “which days should I give Owen?”)'}`,
+    `In the holidays (owen_days with holiday=yes, e.g. "holiday=yes; speed=wed 10:00"; these replace the usual days in a holiday week): ${holidayOwenDays(planning) ? Object.entries(holidayOwenDays(planning)!).map(([k, d]) => `${name(k)} ${d.map((x) => `${DAY3[x - 1]}${sessionTimes(planning, 'holidaySessionTimes')[k]?.[String(x)] ? ` ${sessionTimes(planning, 'holidaySessionTimes')[k][String(x)]}` : ''}`).join('/')}`).join(', ') : 'the usual days'}`,
     `Owen’s own suggestion (a starting point only): ${Object.entries(base).map(([k, d]) => `${name(k)} ${daysWords(d)}`).join(', ')}`,
     `Game this week: ${game ? `${dowShort(game.date)} ${game.date}, leave ${game.leave}, back ${game.back}${game.guess ? ' (usual day: a guess until he says)' : ''}` : 'none'} (change with game_week)`,
     `Read-only sessions he has the app ignore: ${ignored.length ? ignored.join(', ') : 'none'} (session_ignore)`,
