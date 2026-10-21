@@ -7,7 +7,7 @@ import { schoolDays } from './school'
 import type { Block, Energy } from './plan'
 import type { WeekCount } from './targets'
 import { costOf, intensityOf, loadOfIntensity, type CostRow, type LoadPlaced, type LoadSession, type LoadSettings, type Pin } from './load'
-import { DEFAULT_MORE, daysOf, setting, type MoreSettings } from './settings'
+import { DEFAULT_MORE, daysOf, moreSettings as moreSettingsOf, setting, type MoreSettings } from './settings'
 import { isHoliday } from './today/holidays'
 import { DEFAULT_TYPES, ruleProblems, type DayRoom, type Need, type Placed, type Rule, type Session, type TypeDef } from './training'
 import { typeOf } from './training-data'
@@ -34,7 +34,7 @@ export type WeekWorld = {
   whoop?: { recovery: number | null; strain: number | null } | null   // today's recovery, yesterday's strain
   tiredWhy?: Map<string, string>   // why a day is a tired day ("Whoop recovery 28%")
   pins?: Map<string, Pin>   // sessions he placed himself on the card
-  sent?: { date: string; title: string; start: string; end: string; guessed_time?: boolean }[]   // the week he sent (already in events)
+  sent?: { date: string; title: string; start: string; end: string; guessed_time?: boolean; note?: { id: string; i: number; items: unknown[] } }[]   // the week he sent (already in events; row "week:N" is sent[N])
   // Build O: his set-up and rhythm (profiles.planning), each day's 🧠 load, and training blocks he ticked this week
   planning?: unknown
   mental?: MentalDay[]
@@ -81,12 +81,15 @@ export function optWorldOf(w: WeekWorld, keep: Planned[] = w.planned.filter((b) 
   // (his leave-school time: "I leave at 16:05")
   const schoolEnd = new Map<string, number>()
   for (const sd of schoolDays(w.events, w.changes, w.from, w.to, w.settings.schoolFreePeriods).values()) schoolEnd.set(sd.date, leaveSchool(sd, w.settings))
-  const rooms = trainingRooms(w, keep).map((r) => ({ ...r, slots: rhythmCut(r.date, r.slots, more) }))
+  // a test day (the ACT retake on Sun 25 Oct): no training at all that day; the day before: light only
+  const tests = testDaysOf(w)
+  const rooms = trainingRooms(w, keep).filter((r) => !tests.on.has(r.date)).map((r) => ({ ...r, slots: rhythmCut(r.date, r.slots, more) }))
   // his fixed days (Owen's): the holiday ones in a holiday week (most of its weekdays are holidays)
   const days = datesIn(w.from, w.to), weekdays = days.filter((d) => isoDow(d) <= 5), pool = weekdays.length ? weekdays : days
-  const fixed = fixedDaysFor(w.planning, pool.filter((d) => isHoliday(w.planning, d)).length * 2 > pool.length)
+  const holiday = pool.filter((d) => isHoliday(w.planning, d)).length * 2 > pool.length
+  const fixed = fixedDaysFor(w.planning, holiday)
   return {
-    from: w.from, to: w.to, today: w.today, rooms, fixed: fixedLoad(w), rules: w.rules, settings: more,
+    from: w.from, to: w.to, today: w.today, rooms, fixed: fixedLoad(w), rules: w.rules, settings: more, holiday, testDays: tests.on, lightOnly: tests.eve,
     costs: w.costs ?? [], types, heavyUntil: w.settings.heavyUntil, trainingFrom: w.trainingFrom ?? more.trainingFrom,
     // on his holidays gym can be from 12:00 (holidayTrainingFrom), never earlier; his usual time is still preferred
     trainingEarliestOn: (d: string) => (isHoliday(w.planning, d) ? setting<string>(w.planning, 'holidayTrainingFrom') : null),
@@ -98,6 +101,17 @@ export function optWorldOf(w: WeekWorld, keep: Planned[] = w.planned.filter((b) 
     weights: { travel: more.wTravel, poorFit: more.wPoorFit, afterSchool: more.wAfterSchool, upperThird: more.wUpperThird },
     owenDays: fixed.days, baseline: owenBaseline(w.planning), sessionTimes: fixed.times, ...weekProgress(w),
   }
+}
+
+/** His test days in the week (date → what: "ACT retake"), and the days before them (date → why only light training). */
+export function testDaysOf(w: Pick<WeekWorld, 'mental' | 'planning'>): { on: Map<string, string>; eve: Map<string, string> } {
+  const on = new Map<string, string>(), eve = new Map<string, string>()
+  const load = moreSettingsOf(w.planning).mentalTest
+  for (const m of w.mental ?? []) {
+    if (m.test) on.set(m.date, m.items.find((i) => i.load === load && !/ tomorrow$/.test(i.what))?.what ?? 'a test')
+    if (m.testEve) eve.set(m.date, `the day before ${m.items.find((i) => / tomorrow$/.test(i.what))?.what.replace(/ tomorrow$/, '') ?? 'a test'}`)
+  }
+  return { on, eve }
 }
 
 /** His set-up for the week and what's already done: sessions, places, the target each counts toward, sessions done this

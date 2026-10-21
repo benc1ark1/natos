@@ -62,7 +62,9 @@ export function holidayChanges(events: EventRow[], changes: EventException[], pl
   const extra: EventException[] = []
   for (const o of expandEvents(events, a, b, changes)) {
     if (o.cancelled || !inHoliday(o.date) || own(o.event)) continue
-    if (!isSchool(o.event) && !copies.has(o.key)) continue
+    // school-linked training ("School football", "School gym") goes too, even without the school flag
+    const schoolTraining = !!o.event.training_type && o.event.training_type !== 'none' && /\bschool\b/i.test(o.event.title)
+    if (!isSchool(o.event) && !copies.has(o.key) && !schoolTraining) continue
     extra.push({ id: `holiday:${o.event.id}:${o.usualDate}`, event_id: o.event.id, on_date: o.usualDate, cancelled: true, new_date: null, new_start: null, new_end: null, missed: false })
   }
   // a real change for the same occurrence is replaced by the holiday one (it's off either way)
