@@ -23,18 +23,21 @@ import { cleanPattern, ruleWords, type MailRule } from '../mail/rules'
 import { DEFAULT_COSTS, levelWord, sessionOverride, typeCost, type CostRow } from '../load'
 import { gameChange, ignoreChange, owenChange, placeChange, sessionChange, upperWeekChange } from '../setup-edit'
 import { loadCosts } from '../training-data'
+import { focusChange } from '../today/focus'
 
 export const C2_OPS = ['event_move', 'event_cancel', 'event_new', 'event_weekly', 'test_date', 'goal_topics', 'goal_archive', 'training_type', 'rule_set', 'rule_off', 'rule_on',
   'place_new', 'event_place', 'travel_set', 'setting', 'event_set', 'target_set', 'list_edit', 'calendar_set',
   'stage_set', 'topic_new', 'topic_set', 'mistake_done', 'guide_log', 'guide_note', 'mail_rule', 'load_set',
   // Build O: his set-up (places, sessions), Owen's days, this week's game, ignored read-only sessions, a school day's times
   'setup_set', 'owen_days', 'game_week', 'session_ignore', 'gap_done', 'school_day', 'upper_week',
+  // fix round: a focus period ("until 25 Oct only ACT": lib/today/focus.ts)
+  'focus_period',
   // things only the dashboard could do before (Build O audit): a plan block, a new subject or weekly target, restore, a guide
   'block_move', 'block_skip', 'subject_new', 'target_new', 'restore', 'guide_set',
   // maths system: a topic's colour ("trig yellow", "Book 1 chapters 1–13 green")
   'topic_status'] as const
 /** Changes that are one key of profiles.planning (applied and undone like a setting). */
-const PLANNING_OPS: readonly string[] = ['setting', 'list_edit', 'setup_set', 'owen_days', 'game_week', 'session_ignore', 'gap_done', 'upper_week']
+const PLANNING_OPS: readonly string[] = ['setting', 'list_edit', 'setup_set', 'owen_days', 'game_week', 'session_ignore', 'gap_done', 'upper_week', 'focus_period']
 export const STUDY_OPS: readonly string[] = ['stage_set', 'topic_new', 'topic_set', 'mistake_done', 'topic_status']
 export const GUIDE_OPS: readonly string[] = ['guide_log', 'guide_note']
 export type C2Op = (typeof C2_OPS)[number]
@@ -165,6 +168,12 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
       : op === 'game_week' ? gameChange(v, rows.planning, today)
       : op === 'upper_week' ? upperWeekChange(v, rows.planning, today)
       : ignoreChange(v, rows.planning, rows.titles ?? [])
+    if (r.problem || !r.change) return { problem: r.problem ?? 'nothing to change' }
+    return { action: { op, table: 'profiles', id: r.change.key, title: r.change.title, line: r.change.line, patch: r.change.patch } }
+  }
+  if (op === 'focus_period') {
+    if (!/clear\s*=/i.test(a.value ?? '') && !grounded(a.words)) return { problem: 'the focus’s end date wasn’t in your words' }
+    const r = focusChange(a.value ?? '', rows.planning, today)
     if (r.problem || !r.change) return { problem: r.problem ?? 'nothing to change' }
     return { action: { op, table: 'profiles', id: r.change.key, title: r.change.title, line: r.change.line, patch: r.change.patch } }
   }

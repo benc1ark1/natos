@@ -22,8 +22,9 @@ import { isLowRecovery, whoopDay } from '../whoop/sync'
 import { plain, say } from './turns'
 import type { ViewData } from './views'
 import { noteWeek, trainText, type TrainingInfo } from './trainplan'
-import { proposeYourWeek, yourWeekText, type YourWeek } from './yourweek'
+import { planLimits, proposeYourWeek, yourWeekText, type YourWeek } from './yourweek'
 import { schoolDays } from '../school'
+import { blockedWhy, dayRules, testDays, type TrackerRule } from '../today/focus'
 import { looksLikeWeek } from './weekread'
 
 export type PlanPayload = {
@@ -53,7 +54,8 @@ export const planButtons = (id: string): Button[][] => [
  * Returns the card's payload, or a message when there's nothing to plan. Used by the bot and by the AI checks.
  */
 export async function buildPlan(req: PlanRequest, ctx: PlannerContext, data: ViewData, dayEnergy: Energy | null,
-  previous: string | null, onUsage?: (model: string, usage: Usage) => Promise<unknown>): Promise<{ payload: PlanPayload } | { message: string }> {
+  previous: string | null, onUsage?: (model: string, usage: Usage) => Promise<unknown>,
+  limits: { ideas?: { request: string; source_text?: string | null }[]; tracker?: TrackerRule[]; subjects?: { id: string; name: string }[] } = {}): Promise<{ payload: PlanPayload } | { message: string }> {
   const today = data.today
   const date = /^\d{4}-\d{2}-\d{2}$/.test(req.date) && req.date >= today && req.date <= addDays(today, 6) ? req.date : today
   const nowMin = minutesOf(timeOf(data.now))
@@ -82,7 +84,23 @@ export async function buildPlan(req: PlanRequest, ctx: PlannerContext, data: Vie
   }, ctx, onUsage)
   if (!res.ok) return { message: `⚠️ ${res.error} Nothing planned.` }
 
-  const placed = placeItems(res.items, slots, data.settings, { budget, energy, until: toHHMM(Math.min(until, 24 * 60 - 1)) })
+  // what may go on that day (lib/today/focus.ts): not before a task's start date, a focus period's own work, nothing
+  // but the test on a test day (light the day before); one block per task
+  const sdays = schoolDays(data.events, data.changes, date, addDays(date, 1), data.settings.schoolFreePeriods)
+  const tests = testDays(data.goals, (d) => sdays.has(d))
+  const rules = dayRules(data.planning, tests, date, limits.tracker ?? [])
+  const test = tests.get(date) ?? tests.get(addDays(date, 1))
+  const seen = new Set<string>()
+  const items = res.items.filter((it) => {
+    const t = it.ref?.kind === 'task' ? data.tasks.find((x) => x.id === it.ref!.id) ?? null : null
+    const k = t ? `task:${t.id}` : it.title
+    if (seen.has(k)) return false
+    seen.add(k)
+    const ofTest = !!test && (it.title.toLowerCase().includes(test.toLowerCase()) || (/\bACT\b/.test(test) && /\bACT\b/.test(it.title)))
+    const subject = t?.subject_id ? limits.subjects?.find((x) => x.id === t.subject_id)?.name ?? null : null
+    return !blockedWhy({ title: it.title, subject, heavy: it.kind === 'focus' || it.kind === 'training', task: t, deadline: t ? deadlineOf(t) : null, ofTest }, date, rules, { until: date, later: false, ideas: limits.ideas })
+  })
+  const placed = placeItems(items, slots, data.settings, { budget, energy, until: toHHMM(Math.min(until, 24 * 60 - 1)) })
   // a last guard: a block breaking a rule is left out, and a plan that still breaks one is never shown
   const blocks = placed.blocks.filter((b) => planProblems([b], slots, data.settings, null).length === 0)
   const problems = planProblems(blocks, slots, data.settings, budget)
@@ -100,7 +118,10 @@ export async function proposePlan(sb: SupabaseClient, chatId: number, req: PlanR
   const { data: ds } = await sb.from('day_state').select('energy').eq('on_date', req.date).maybeSingle()
   // what he said about the day wins; otherwise low Whoop recovery (today's) makes it a lighter day
   const whoopTired = !ds?.energy && req.date === data.today && isLowRecovery(await whoopDay(sb, req.date), data.planning)
-  const built = await buildPlan(req, ctx, data, (ds?.energy as Energy | null) ?? (whoopTired ? 'tired' : null), opts.replaces?.payload.summary ?? null, (model, usage) => recordUsage(sb, 'plan', model, usage))
+  // (his App ideas are never blocks; the study tracker's pause / focus rules hold here too)
+  const on = /^\d{4}-\d{2}-\d{2}$/.test(req.date) ? req.date : data.today
+  const limits = await planLimits(sb, on, on).catch(() => ({}))
+  const built = await buildPlan(req, ctx, data, (ds?.energy as Energy | null) ?? (whoopTired ? 'tired' : null), opts.replaces?.payload.summary ?? null, (model, usage) => recordUsage(sb, 'plan', model, usage), limits)
   if ('message' in built) { await say(sb, chatId, esc(built.message), undefined, { intent: 'plan' }); return }
   const payload = built.payload
   if (whoopTired && !req.energy && payload.energy === 'tired') payload.whoop = (await whoopDay(sb, req.date))?.recovery ?? undefined
@@ -303,8 +324,8 @@ export async function buildWeekPlan(world: WeekWorld, ctx: PlannerContext, words
 
 /** Plan the week and send it as one card: the "Your week" card (replacing one being changed). */
 export async function proposeWeekPlan(sb: SupabaseClient, chatId: number, words: string, ctx: PlannerContext, data: ViewData,
-  opts: { replaces?: { id: string; payload: { summary?: string; card_message_id?: number | null } } | null; onReplace?: () => Promise<void> } = {}): Promise<void> {
-  await proposeYourWeek(sb, chatId, words, ctx, data, { replaces: (opts.replaces as never) ?? null, onReplace: opts.onReplace })
+  opts: { replaces?: { id: string; payload: { summary?: string; card_message_id?: number | null } } | null; onReplace?: () => Promise<void>; asked?: boolean } = {}): Promise<void> {
+  await proposeYourWeek(sb, chatId, words, ctx, data, { replaces: (opts.replaces as never) ?? null, onReplace: opts.onReplace, asked: opts.asked })
 }
 
 // ---------------------------------------------------------------------------
