@@ -26,17 +26,63 @@ import type { TestKind, TrackerTopic } from './types'
 export const TEST_WORDS = /\b(?:tests?|assessments?|exams?|examination|consolidation|mocks?|quiz(?:zes)?)\b/i
 export const looksLikeTest = (title: string) => TEST_WORDS.test(title)
 
-/** The teacher's description without the Homework feed's header lines (Class / Subject / Classroom / Ref) or HTML. */
+/** The teacher's description without the Homework feed's header lines (Class / Subject / Classroom / Ref), a line that
+ *  is only the Classroom link (the task's hand-in link has it), or HTML. */
 export function cleanDescription(description?: string | null): string {
-  const text = (description ?? '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
-  return text.split('\n').filter((l) => !/^[ \t]*(class|subject|classroom|ref):/i.test(l)).join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500)
+  const text = (description ?? '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+  return text.split('\n').filter((l) => !/^[ \t]*(class|subject|classroom|ref):/i.test(l) && !/^[ \t]*https:\/\/classroom\.google\.com\/\S*[ \t]*$/i.test(l))
+    .join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500)
 }
 
-/** Hook for lib/google/sync.ts: a homework task's details; a test-like assignment also keeps its description. */
-export function classroomDetails(base: string | null, title: string, description?: string | null): string | null {
-  if (!looksLikeTest(title)) return base
+/** Hook for lib/google/sync.ts: a homework task's details: the class and due time, then the teacher's description (what
+ *  to do: the questions), so they're in the task's notes (fix round 20; a test's description is also read by the tick). */
+export function classroomDetails(base: string | null, _title: string, description?: string | null): string | null {
   const desc = cleanDescription(description)
   return desc ? `${base ? `${base}\n\n` : ''}${desc}` : base
+}
+
+// Fix round 20: teachers often call an assignment "Homework from 14/10" (the day it was set). That says nothing about
+// the work, so the task is named after the objective or topic in the description instead.
+const DATE_WORDS = new RegExp(`^(?:${[
+  'home ?works?', 'hw', 'preps?', 'assignments?', 'tasks?', 'set', 'from', 'for', 'on', 'due', 'the', 'of', 'in', 'week', 'wk', 'lesson', 'no', 'number', 'and',
+  'mon(?:day)?', 'tue(?:s(?:day)?)?', 'wed(?:nesday)?', 'thu(?:r(?:s(?:day)?)?)?', 'fri(?:day)?', 'sat(?:urday)?', 'sun(?:day)?', 'today', 'tomorrow', 'tonight',
+  'jan(?:uary)?', 'feb(?:ruary)?', 'mar(?:ch)?', 'apr(?:il)?', 'may', 'june?', 'july?', 'aug(?:ust)?', 'sept?(?:ember)?', 'oct(?:ober)?', 'nov(?:ember)?', 'dec(?:ember)?',
+  '\\d{1,4}(?:st|nd|rd|th)?',
+].join('|')})$`, 'i')
+
+/** "Homework from 14/10", "HW 19.10.26", "Week 7 homework", "Homework – Tuesday 14th October": only says it's homework. */
+export function plainHomeworkTitle(title: string): boolean {
+  if (!/\b(home ?work|hw|prep|assignment)s?\b/i.test(title)) return false
+  return title.split(/[\s/.\-–—:,()#[\]]+/).filter(Boolean).every((w) => DATE_WORDS.test(w))
+}
+
+const LABEL = /^(?:learning\s+)?(?:objectives?|aims?|l\.?o\.?|walt|topics?|title|focus|lesson)\s*[:\-–—]\s*(.*)$/i
+const GREETING = /^(hi|hello|hey|dear|good (morning|afternoon|evening))\b[^\n]{0,40}[,!.]?\s*$/i
+
+/** "Objective: To be able to solve SHM problems" → "Solve SHM problems"; else the description's first real line. */
+export function objectiveOf(description?: string | null): string | null {
+  const lines = cleanDescription(description).split('\n').map((l) => l.replace(/^[\s*•\-–]+/, '').trim())
+  let found: string | null = null
+  for (const [i, l] of lines.entries()) {
+    const m = l.match(LABEL)
+    if (!m) continue
+    found = m[1].trim() || lines.slice(i + 1).find(Boolean) || null   // "Objective:" with the words on the next line
+    if (found) break
+  }
+  // no label: the first line that isn't a greeting, a "due …" line or only "please complete the following"
+  found ??= lines.map((l) => l.replace(/^please\s+(?:complete|do|finish|attempt|answer)(?:\s+the\s+following)?\s*:?\s*/i, '').trim())
+    .find((l) => l.length >= 3 && !GREETING.test(l) && !/^(due|deadline|hand in|submit)\b/i.test(l) && !/^https?:\/\//i.test(l)) ?? null
+  if (!found) return null
+  let t = found.replace(/^(?:to be able to|we are learning to|i can|walt|to)\s+/i, '').split(/(?<=[a-z0-9)])\.\s/i)[0].replace(/[.:;,\s]+$/, '').trim()
+  if (t.length > 80) t = `${t.slice(0, 79).replace(/\s+\S*$/, '')}…`
+  return t.length >= 3 ? t[0].toUpperCase() + t.slice(1) : null
+}
+
+/** Hook for lib/google/sync.ts: the task's title. A plain "Homework from 14/10" becomes the objective or topic (or
+ *  "Physics homework" when the description has none); any other title is the teacher's own. */
+export function classroomTitle(title: string, description: string | null | undefined, subject: string | null): string {
+  if (!plainHomeworkTitle(title)) return title
+  return (objectiveOf(description) ?? `${subject ?? 'School'} homework`).slice(0, 120)
 }
 
 // ---------------------------------------------------------------------------

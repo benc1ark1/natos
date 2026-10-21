@@ -25,8 +25,9 @@ import { activeSources } from '../lists'
 import { offerSlot } from '../telegram/dayplan'
 import { loadViewData } from '../telegram/views'
 import { findDeadline, type Deadline } from './deadline'
+import { expireTutorHomework } from './expire'
 import { HOMEWORK_WORDS, homeworkNotes, homeworkSender, homeworkSenders, homeworkTitle, schoolDomain, type HomeworkSender } from './homework'
-import { decidingRule, gmailLink, isAutomated, ruleWords, type Account, type MailKind, type MailRule } from './rules'
+import { decidingRule, gmailLink, isAutomated, robotSender, ruleWords, type Account, type MailKind, type MailRule } from './rules'
 import { missingColumn } from './store'
 export { ingest } from './store'
 
@@ -128,6 +129,35 @@ export async function classify(sb: SupabaseClient, list: (EmailRow & { setsHomew
   return new Map((out.emails ?? []).filter((x) => x && Number.isInteger(x.n)).map((x) => [x.n, x]))
 }
 
+/** "Emails worth a look" (fix round 22): he's only CC'd ('cc') or it's between other people ('others'), from how it was
+ *  addressed when it arrived (lib/mail/store.ts) or once sorted. Kept in the row's details: no new column. */
+export const lookOf = (e: Pick<EmailRow, 'details'>): 'cc' | 'others' | null => {
+  const d = (e.details ?? {}) as { addressed?: string; look?: string }
+  const v = d.look ?? d.addressed
+  return v === 'cc' || v === 'others' ? v : null
+}
+
+/** Does it set work or give a deadline (homework words in its subject, preview or text, or a date to act by)? */
+export function needsHim(e: Pick<EmailRow, 'subject' | 'snippet' | 'received_at'> & { body?: string | null }): boolean {
+  const text = [e.snippet, e.body].filter(Boolean).join('\n')
+  return HOMEWORK_WORDS.test(`${e.subject ?? ''}\n${text}`) || !findDeadline({ subject: e.subject, body: text, sentAt: e.received_at }).guess
+}
+
+/** May an email he's only CC'd on (or between others) be filed away? Not when it's homework (homework words in its
+ *  subject, preview or text, or one of his homework senders), has a deadline, or his rules flag it. */
+export function hideable(e: Pick<EmailRow, 'subject' | 'snippet' | 'received_at' | 'flagged'> & { body?: string | null }, hw: HomeworkSender): boolean {
+  if (e.flagged || hw === 'listed') return false
+  return !needsHim(e)
+}
+
+/** Fix round 22: mail through a Google Group or list (a teacher to year13@…) carries List-Id, so the script marks it
+ *  automated like a newsletter. It's for him when it's from his school or a homework sender, or sets work or a deadline:
+ *  then it's sorted as usual. A no-reply sender, a promotion and a newsletter (List-Unsubscribe) are still robots. */
+export function groupMailForHim(e: Pick<EmailRow, 'subject' | 'snippet' | 'received_at' | 'labels' | 'from_email' | 'details'> & { body?: string | null }, hw: HomeworkSender): boolean {
+  if (!(e.details as { list?: boolean } | null)?.list || robotSender(e)) return false
+  return !!hw || needsHim(e)
+}
+
 /** Sort what's waiting. Never throws for one bad batch: those emails are tried again next run (3 tries). */
 export async function sortPending(sb: SupabaseClient, today = todayISO()): Promise<{ sorted: number; ai: number; waiting: number }> {
   const stale = new Date(Date.now() - 10 * 60_000).toISOString()
@@ -147,8 +177,11 @@ export async function sortPending(sb: SupabaseClient, today = todayISO()): Promi
   const rules = (ruleRows ?? []) as MailRule[]
   const hwFrom = await homeworkFrom(sb, planning)
   // the email's text is kept only for homework (what to do goes in the task's notes); anything else is cleared
+  // (what came with the email, how it was addressed and whether it came through a group, stays in its details)
+  const kept = (e: EmailRow) => { const d = (e.details ?? {}) as { addressed?: unknown; list?: unknown }; return { ...(d.addressed ? { addressed: d.addressed } : {}), ...(d.list ? { list: d.list } : {}) } }
   const save = (e: EmailRow, patch: Record<string, unknown>) =>
-    sb.from('emails').update({ ...patch, ...(e.body && patch.status === 'sorted' && patch.kind !== 'homework' ? { body: null } : {}) }).eq('id', e.id)
+    sb.from('emails').update({ ...patch, ...('details' in patch ? { details: { ...kept(e), ...(patch.details as object) } } : {}),
+      ...(e.body && patch.status === 'sorted' && patch.kind !== 'homework' ? { body: null } : {}) }).eq('id', e.id)
   // his tutors and his school always set homework (only a plain calendar event stays an event)
   const asHomework = (e: EmailRow, hw: HomeworkSender, why: string) =>
     save(e, { status: 'sorted', kind: 'homework', flagged: e.flagged, why: `${hw === 'listed' ? 'homework sender (your setting)' : 'your school'}: ${why}`.slice(0, 200), attempts: e.attempts + 1 })
@@ -161,7 +194,11 @@ export async function sortPending(sb: SupabaseClient, today = todayISO()): Promi
     e.flagged = rule?.action === 'flag'
     const hw = homeworkSender(e, hwFrom)
     // a sender he named always gets through; school no-reply robots and newsletters are still robots
-    if (!e.flagged && hw !== 'listed' && isAutomated(e)) { await save(e, { status: 'sorted', kind: 'ignore', why: 'automated (newsletter, promo or no-reply)' }); sorted++; continue }
+    if (!e.flagged && hw !== 'listed' && isAutomated(e) && !groupMailForHim(e, hw)) { await save(e, { status: 'sorted', kind: 'ignore', why: 'automated (newsletter, promo or no-reply)' }); sorted++; continue }
+    // fix round 22: he's only CC'd, or it's clearly between other people: no card, no alert and no AI. It goes in
+    // "Emails worth a look" (the Inbox page and /mail). Never homework, a deadline, his flagged or homework senders
+    const look = hideable(e, hw) ? lookOf(e) : null
+    if (look) { await save(e, { status: 'sorted', kind: 'ignore', flagged: false, why: look === 'cc' ? 'worth a look: you’re only CC’d' : 'worth a look: between other people', details: { look } }); sorted++; continue }
     forAI.push({ ...e, hw, setsHomework: !!hw })
   }
   if (!forAI.length) return { sorted, ai: 0, waiting: 0 }
@@ -286,7 +323,9 @@ async function announce(sb: SupabaseClient, chatId: number, e: EmailRow, today: 
     // his tutors and his school: saved straight away (with ↩️ Undo) when it plainly sets work and isn't already a task;
     // anyone else, or a likely duplicate: a card, nothing saved until ✅
     const setsWork = !deadline.guess || HOMEWORK_WORDS.test(`${e.subject ?? ''} ${e.body ?? e.snippet ?? ''}`)
-    if (!hw || !setsWork || duplicates.length) return proposalCard(sb, chatId, emailText(e), proposal, duplicates, { head: head(e, '📧') })
+    // (sent to a group he's in, like year13@: a year bulletin can read like homework, so it's a card he saves himself)
+    const viaGroup = !!(e.details as { list?: boolean } | null)?.list
+    if (!hw || viaGroup || !setsWork || duplicates.length) return proposalCard(sb, chatId, emailText(e), proposal, duplicates, { head: head(e, '📧') })
     const saved = await saveProposal(sb, proposal, emailText(e), [])
     if (saved.error || !saved.task) {
       proposal.notes.push(`Couldn’t save it by itself (${(saved.error ?? 'not saved').replace(' Your text is still in the box.', '')}): tap ✅ Save.`)
@@ -345,8 +384,10 @@ export async function notifyPending(sb: SupabaseClient, chatId: number, today = 
   return n
 }
 
-/** Everything the watcher does after mail arrives (the incoming route, after answering) and on each 5-minute tick. */
-export async function processMail(sb: SupabaseClient, chatId: number): Promise<{ sorted: number; notified: number }> {
+/** Everything the watcher does after mail arrives (the incoming route, after answering) and on each 5-minute tick;
+ *  also archives a tutor's homework once his next lesson has passed (lib/mail/expire.ts). */
+export async function processMail(sb: SupabaseClient, chatId: number, now = new Date()): Promise<{ sorted: number; notified: number }> {
+  await expireTutorHomework(sb, now).catch(() => [])   // a problem here never stops the email watcher
   const s = await sortPending(sb)
   const notified = await notifyPending(sb, chatId)
   return { sorted: s.sorted, notified }
