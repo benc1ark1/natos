@@ -128,11 +128,8 @@ test('17: small changes re-fit the planner’s picks in code: “nothing on Frid
   assert.deepEqual(off.said, ['study off Fri'])
   const phys = editStudy(ITEMS, 'no physics on Thursday', range)
   assert.deepEqual(phys.items.find((d) => d.date === day(NEXT, 3)).items.map((i) => i.title), ['FM HT2 revision'])
-  const moved = editStudy(ITEMS, 'move FM homework to Saturday', range)
-  assert.deepEqual(moved.items.find((d) => d.date === day(NEXT, 5))?.items.map((i) => i.title) ?? [], [], 'Sat had no picks, so…')
-  // (a day with no picks yet isn't in the list: a move there needs the day to exist)
-  const withSat = [...ITEMS, { date: day(NEXT, 5), items: [] }]
-  const m2 = editStudy(withSat, 'move FM homework to Saturday', range)
+  // (Sat had no picks yet: the day is added)
+  const m2 = editStudy(ITEMS, 'move FM homework to Saturday', range)
   assert.deepEqual(m2.items.find((d) => d.date === day(NEXT, 5)).items.map((i) => i.title), ['FM homework: complex numbers ex 2B'])
   assert.deepEqual(m2.items.find((d) => d.date === day(NEXT, 4)).items.map((i) => i.title), ['Early night'])
   // training words are the optimiser's, not study changes
@@ -178,4 +175,90 @@ test('5 + 6: Today on Wed 21 Oct (ACT focus): no Vlad homework (not before 26 Oc
     { id: 'c', task_id: null, status: 'planned', kind: 'focus' }, { id: 'd', task_id: null, status: 'planned', kind: 'training' }, { id: 'e', task_id: 't-act-read', status: 'planned', kind: 'focus' },
   ]
   assert.deepEqual(onePerTask(rows).map((r) => r.id), ['b', 'c', 'd'])
+})
+
+// Review round: short subject names, moves from one day only, “not <day>” after a move, unclear changes → the AI
+const NEXT_ITEMS = [
+  { date: day(NEXT, 0), items: [{ title: 'Physics: SHM booklet', minutes: 45, kind: 'focus', ref: { kind: 'task', id: 't-phys' }, subject: 'Physics' }, { title: 'Vlad: mechanics questions', minutes: 60, kind: 'focus', ref: { kind: 'task', id: 't-vlad' } }] },
+  { date: day(NEXT, 2), items: [{ title: 'Physics: SHM booklet', minutes: 45, kind: 'focus', ref: { kind: 'task', id: 't-phys' }, subject: 'Physics' }] },
+  { date: day(NEXT, 3), items: [{ title: 'FM HT2 revision', minutes: 45, kind: 'focus', ref: { kind: 'task', id: 't-ht2' }, subject: 'Further Maths' }] },
+  { date: day(NEXT, 4), items: [{ title: 'FM homework: complex numbers ex 2B', minutes: 60, kind: 'focus', ref: { kind: 'task', id: 't-fm' }, subject: 'Further Maths' },
+    { title: 'Chemistry corrections', minutes: 30, kind: 'focus', ref: { kind: 'task', id: 't-overdue' } }, { title: 'Early night', minutes: 30, kind: 'rest', ref: null }] },
+  { date: day(NEXT, 5), items: [] },
+]
+const on = (r, i) => r.items.find((d) => d.date === day(NEXT, i))?.items.map((x) => x.title) ?? []
+
+test('17: “no FM on Friday” takes only FM off Friday (the chemistry stays); “move FM to Saturday” moves Friday’s FM, not Thursday’s HT2', () => {
+  const off = editStudy(NEXT_ITEMS, 'no FM on Friday', range)
+  assert.deepEqual(on(off, 4), ['Chemistry corrections', 'Early night'])
+  assert.deepEqual(off.said, ['FM homework: complex numbers ex 2B off Fri'])
+  assert.equal(off.unclear, false)
+  // (matched by subject too: an item whose title doesn't say FM)
+  const bySubject = editStudy([{ date: day(NEXT, 4), items: [{ title: 'Complex numbers ex 2B', minutes: 60, kind: 'focus', ref: null, subject: 'Further Maths' }] }], 'no FM on Friday', range)
+  assert.deepEqual(on(bySubject, 4), [])
+  const mv = editStudy(NEXT_ITEMS, 'move FM to Saturday', range)
+  assert.deepEqual(on(mv, 5), ['FM homework: complex numbers ex 2B'])
+  assert.deepEqual(on(mv, 3), ['FM HT2 revision'], 'only from the nearest day it’s on')
+  assert.deepEqual(mv.said, ['FM homework: complex numbers ex 2B → Sat'])
+  // “don't put FM on Friday” is a no, not a move
+  assert.deepEqual(on(editStudy(NEXT_ITEMS, 'don’t put FM on Friday', range), 4), ['Chemistry corrections', 'Early night'])
+})
+
+test('17: “move physics to Thursday” moves one physics block (the nearest day), said once; “from Mon” / “, not Mon” picks the day', () => {
+  const mv = editStudy(NEXT_ITEMS, 'move physics to Thursday', range)
+  assert.deepEqual(on(mv, 3), ['FM HT2 revision', 'Physics: SHM booklet'])
+  assert.deepEqual(on(mv, 0), ['Physics: SHM booklet', 'Vlad: mechanics questions'], 'Monday’s physics stays')
+  assert.deepEqual(on(mv, 2), [])
+  assert.deepEqual(mv.said, ['Physics: SHM booklet → Thu'])
+  const fromMon = editStudy(NEXT_ITEMS, 'move physics from Monday to Thursday', range)
+  assert.deepEqual(on(fromMon, 0), ['Vlad: mechanics questions'])
+  assert.deepEqual(on(fromMon, 2), ['Physics: SHM booklet'])
+  // “X, not Monday”: Monday is where it comes from, not a day cleared
+  const notMon = editStudy(NEXT_ITEMS, 'physics to Thursday, not Monday', range)
+  assert.deepEqual(on(notMon, 0), ['Vlad: mechanics questions'], 'Vlad stays on Monday')
+  assert.deepEqual(on(notMon, 3), ['FM HT2 revision', 'Physics: SHM booklet'])
+  assert.deepEqual(notMon.said, ['Physics: SHM booklet → Thu'])
+  // Wed's physics onto Mon, where it already is: one block that day
+  const both = editStudy(NEXT_ITEMS, 'move physics to Monday', range)
+  assert.deepEqual(on(both, 0).filter((t) => t === 'Physics: SHM booklet'), ['Physics: SHM booklet'])
+  assert.deepEqual(on(both, 2), [])
+})
+
+test('17: a change the code can’t read is unclear (the planner AI gets it), never a wiped day; training words are left to the optimiser', () => {
+  const r = editStudy(NEXT_ITEMS, 'no biology on Friday', range)
+  assert.equal(r.unclear, true)
+  assert.deepEqual(on(r, 4), on({ items: NEXT_ITEMS }, 4), 'Friday untouched')
+  assert.equal(editStudy(NEXT_ITEMS, 'move biology to Sat', range).unclear, true)
+  const t = editStudy(NEXT_ITEMS, 'upper on Sat, no gym on Friday', range)
+  assert.deepEqual([t.said, t.unclear], [[], false])
+  assert.deepEqual(on(t, 4), on({ items: NEXT_ITEMS }, 4))
+  // “nothing on Friday” still clears Friday’s study
+  assert.deepEqual(on(editStudy(NEXT_ITEMS, 'nothing on Friday please', range), 4), ['Early night'])
+})
+
+test('9: when the bot read “plan the week”, “next week” anywhere is next week (any word order); not with “this week” too', () => {
+  for (const w of ['for next week can you sort my plan', 'next week: plan it with Vlad on Monday', 'Vlad Monday next week pls'])
+    assert.deepEqual(weekAsked(w, TODAY, true), { from: NEXT, to: day(NEXT, 6) }, w)
+  assert.equal(weekAsked('for next week can you sort my plan', TODAY), null, 'without the bot’s plan_week: the strict words only')
+  assert.equal(weekAsked('plan this week, FM is due next week', TODAY, true), null)
+})
+
+test('1: the study tracker’s rules count too: “pause physics until 25 Oct” and “focus on ACT until 25 Oct” (plan_rules)', () => {
+  const noFocus = { ...PLANNING, focusPeriods: [] }
+  const pause = [{ kind: 'pause', target: 'physics', words: 'pause physics until 25 Oct', startsOn: TODAY, endsOn: ACT_DAY }]
+  const phys = { title: 'Physics: SHM booklet', subject: 'Physics', heavy: true, task: { ...task('t-phys'), window_start: null }, deadline: deadlineOf(task('t-phys')) }
+  assert.match(blockedWhy(phys, day(THIS, 4), dayRules(noFocus, tests, day(THIS, 4), pause), { until: day(THIS, 6) }), /Physics paused until Sun 25 Oct/)
+  assert.equal(blockedWhy(phys, NEXT, dayRules(noFocus, tests, NEXT, pause), { until: day(NEXT, 6) }), null, 'it ends by itself')
+  // maths pauses cover Further Maths (“FM …” titles too)
+  const maths = [{ kind: 'pause', target: 'maths', words: 'pause maths until 25 Oct', startsOn: TODAY, endsOn: ACT_DAY }]
+  assert.ok(blockedWhy({ title: 'FM homework: complex numbers ex 2B', heavy: true }, day(THIS, 3), dayRules(noFocus, tests, day(THIS, 3), maths), { until: day(THIS, 6) }))
+  // “focus on ACT until 25 Oct” (saved as a top-priority rule in those words) is a focus period: ACT free time too
+  const boost = [{ kind: 'boost', target: 'act', words: 'focus on ACT until 25 Oct', startsOn: TODAY, endsOn: ACT_DAY }]
+  const r = dayRules(noFocus, tests, day(THIS, 4), boost)
+  assert.equal(r.focus?.only, 'ACT')
+  assert.ok(actFillDay(r))
+  assert.match(blockedWhy({ title: 'Chemistry corrections', heavy: true, task: task('t-overdue'), deadline: deadlineOf(task('t-overdue')) }, day(THIS, 4), r, { until: day(THIS, 6) }), /only ACT until Sun 25 Oct/)
+  assert.equal(dayRules(noFocus, tests, NEXT, boost).focus, null)
+  // a plain “ACT top priority” is a boost, not “only ACT”
+  assert.equal(dayRules(noFocus, tests, day(THIS, 4), [{ ...boost[0], words: 'ACT top priority this week' }]).focus, null)
 })

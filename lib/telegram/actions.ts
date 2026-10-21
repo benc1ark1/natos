@@ -9,7 +9,7 @@ import type { PlannerContext } from '../ask/server'
 import { completeTask, moveTask, undoComplete, updateTask } from '../data'
 import { saveProject, setProjectArchived } from '../projects'
 import { setReminderDone } from '../reminders'
-import { autoStatus, deadlineLabel } from '../tasks'
+import { autoStatus, deadlineLabel, deadlineOf } from '../tasks'
 import { dowShort, dueAtFromDate, shortDate, timeOf, dateISOOf, todayISO, weekStartISO, zonedToUTC } from '../time'
 import type { Project, Reminder, Task, TaskStatus, WeeklyTarget } from '../types'
 import { C2_OPS, GUIDE_OPS, STUDY_OPS, applyC2, checkC2, loadC2Rows, undoC2, type C2Applied, type C2Op, type C2Rows } from './actions-c2'
@@ -237,6 +237,9 @@ export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, 
         if (!isDate(a.date) || a.date <= today) { problems.push(`no clear start date for “${t.title}”`); break }
         if (!grounded(a.words, said)) { problems.push(`the start date for “${t.title}” wasn’t in your words`); break }
         if (t.window_start?.slice(0, 10) === a.date) { problems.push(`“${t.title}” already starts ${day(a.date)}`); break }
+        // (a start after its deadline means it can never be planned: a new due date in the same card counts)
+        const due = raw.find((x) => x.op === 'due' && x.ref === a.ref && isDate(x.date ?? ''))?.date ?? deadlineOf(t)
+        if (due && a.date > due) { problems.push(`“${t.title}” is due ${day(due)}, before ${day(a.date)}: change its due date too, or pick an earlier start`); break }
         add(`${esc(was)} → <b>not before ${day(a.date)}</b> <i>(nothing planned for it before then)</i>`, { window_start: a.date })
         break
       }

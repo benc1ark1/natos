@@ -32,9 +32,9 @@ import { recommendations } from './roi'
 import { schoolDays, withSchool, type SchoolWindow } from '../school'
 import { courses as mathsCourses, modeOf, weekBlocks } from '../maths'
 import { deadlineOf } from '../tasks'
-import { ACT_FILL_WHY, actFillDay, actFillers, blockedWhy, dayRules, focusLines, notYet, rulesForAI, testDays } from '../today/focus'
+import { ACT_FILL_WHY, actFillDay, actFillers, blockedWhy, dayRules, focusLines, notYet, rulesForAI, testDays, type TrackerRule } from '../today/focus'
 import { mathsWorld } from './views-more'
-import { weekRulesLine } from '../tracker/bot-data'
+import { RULE_COLS, ruleOf, weekRulesLine } from '../tracker/bot-data'
 import { loadActWorld } from '../act/data'
 import { actPicks } from '../act/engine'
 import { actTaskMinutes, actTasksOn, isActTask } from '../act/tasks'
@@ -120,12 +120,13 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
     ]
   }
   // what may go on each day (lib/today/focus.ts): not before a task's start date, Later only if due this week, a focus
-  // period's own work only, nothing but the test on a test day (light the day before), never an App idea
-  const ideas = await openIdeas(sb)
+  // period's own work only, nothing but the test on a test day (light the day before), never an App idea; the study
+  // tracker's "pause physics until …" / "focus on ACT until …" rules count the same
+  const { ideas, tracker } = await planLimits(sb, w.from, w.to)
   // (a test the day after the week counts too: its eve is in the week)
   const schoolTo = schoolDays(w.events, w.changes, w.from, addDays(w.to, 1), w.settings.schoolFreePeriods)
   const tests = testDays(data.goals, (date) => schoolTo.has(date))
-  const rulesOf = (date: string) => dayRules(data.planning, tests, date)
+  const rulesOf = (date: string) => dayRules(data.planning, tests, date, tracker)
   const taskOf = (it: PlanItem) => (it.ref?.kind === 'task' ? data.tasks.find((t) => t.id === it.ref!.id) ?? null : null)
   const subjectOf = (it: PlanItem) => it.subject ?? (isAct(it) ? 'ACT' : maths.subjects.find((s) => s.id === taskOf(it)?.subject_id)?.name ?? null)
   const ofTest = (it: PlanItem, date: string) => {
@@ -159,7 +160,7 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
     const startOf = (id: string) => data.tasks.find((t) => t.id === id) ?? {}
     const mathsFree = { ...maths, tasks: maths.tasks.filter((t) => !notYet(startOf(t.id), w.to)) }
     const mode = modeOf(mathsFree)
-    const mathsOff = (date: string) => { const r = rulesOf(date); return !!r.test || !!r.eve || (!!r.focus && !/math|^fm$/i.test(r.focus.only)) || (mode.kind === 'homework' && notYet(startOf(mode.tasks[0].id), date)) }
+    const mathsOff = (date: string) => { const r = rulesOf(date); return !!r.test || !!r.eve || (!!r.focus && !/math|^fm$/i.test(r.focus.only)) || !!r.paused?.some((p) => p.names.some((n) => /math|^fm$/i.test(n))) || (mode.kind === 'homework' && notYet(startOf(mode.tasks[0].id), date)) }
     const mb = weekBlocks(mathsFree, days.map((d) => ({ date: d.date, skip: gameDays.has(d.date) || mathsOff(d.date) })))
     studyItems = days.map((d) => ({ date: d.date, items: [
       ...(mb.get(d.date) ?? []).map((b): PlanItem => ({ title: b.title, minutes: b.minutes, kind: 'focus', ref: b.taskId ? { kind: 'task', id: b.taskId } : null, why: b.why, subject: b.course?.name ?? null })),
@@ -228,10 +229,19 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
   return { payload: { date: w.from, week: { from: w.from, to: w.to }, energy: 'normal', energyGiven: false, blocks, unplaced, tbc: plan.tbc, note, pushBack, yourWeek } as PlanPayload }
 }
 
-/** His open App ideas (requests for Claude Code): never planned as work. None before speed.sql / on an error. */
-async function openIdeas(sb: SupabaseClient): Promise<{ request: string; source_text: string | null }[]> {
-  const { data, error } = await sb.from('app_ideas').select('request,source_text').eq('status', 'open')
-  return error ? [] : (data ?? []) as { request: string; source_text: string | null }[]
+/**
+ * What limits planning besides his settings: his open App ideas (requests for Claude Code, never planned as work) and
+ * the study tracker's live rules for these days (plan_rules); his subjects' names (a rule or focus names a subject).
+ * None before speed.sql / on an error. (Your week, plan my day)
+ */
+export async function planLimits(sb: SupabaseClient, from: string, to: string): Promise<{ ideas: { request: string; source_text: string | null }[]; tracker: TrackerRule[]; subjects: { id: string; name: string }[] }> {
+  const [ideas, rules, subjects] = await Promise.all([
+    sb.from('app_ideas').select('request,source_text').eq('status', 'open').then((r) => (r.error ? [] : (r.data ?? []) as { request: string; source_text: string | null }[]), () => []),
+    sb.from('plan_rules').select(RULE_COLS).is('archived_at', null).lte('starts_on', to).gte('ends_on', from)
+      .then((r) => (r.error ? [] : ((r.data ?? []) as Record<string, unknown>[]).map(ruleOf)), () => []),
+    sb.from('subjects').select('id,name').then((r) => (r.error ? [] : (r.data ?? []) as { id: string; name: string }[]), () => []),
+  ])
+  return { ideas, tracker: rules, subjects }
 }
 
 const normTitle = (s: string) => s.toLowerCase().replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
@@ -349,11 +359,13 @@ type Card = { id: string; payload: PlanPayload & { card_message_id?: number | nu
 
 /** Plan the week and send the card. `replaces`: a Your week card being changed (his words, or a 🔁). */
 export async function proposeYourWeek(sb: SupabaseClient, chatId: number, words: string, ctx: PlannerContext, data: ViewData,
-  opts: { replaces?: Card | null; onReplace?: () => Promise<void>; head?: string; pins?: Map<string, Pin>; auto?: boolean; range?: { from: string; to: string } } = {}): Promise<string | null> {
+  opts: { replaces?: Card | null; onReplace?: () => Promise<void>; head?: string; pins?: Map<string, Pin>; auto?: boolean; range?: { from: string; to: string }
+    asked?: boolean } = {}): Promise<string | null> {
   const { noteWeek } = await import('./trainplan')
   if (looksLikeWeek(words)) await noteWeek(sb, chatId, words, data, { quiet: true })   // his week typed out: read it first
   // "plan next week" works any day (on a Wednesday too): next Mon–Sun, else the card's week, else the rest of this one
-  const range = opts.range ?? weekAsked(words, data.today) ?? (opts.replaces?.payload.week ?? weekRange(data.today))
+  // (`asked`: the bot read his message as "plan the week", so "next week" anywhere in it is enough)
+  const range = opts.range ?? weekAsked(words, data.today, opts.asked) ?? (opts.replaces?.payload.week ?? weekRange(data.today))
   // the card being changed, if it's for the same week (a different week is a fresh plan)
   const was = opts.replaces?.payload.week?.from === range.from ? opts.replaces?.payload.yourWeek ?? null : null
   const prevBlocks = was ? opts.replaces?.payload.blocks ?? [] : []
@@ -363,7 +375,9 @@ export async function proposeYourWeek(sb: SupabaseClient, chatId: number, words:
   // a change to the card re-fits it in code: the study the planner picked is kept (moved or left out as he says);
   // the planner AI only runs for a fresh plan ("re-plan the week", a new week, no card)
   const refit = !!was && !FRESH.test(words)
-  const edit = refit ? editStudy(was!.studyItems, words, range) : null
+  // (a study change the code can't read for sure goes to the planner AI with the card as before, never guessed)
+  const read = refit ? editStudy(was!.studyItems, words, range) : null
+  const edit = read?.unclear ? null : read
   const review = was?.review ?? await weekReview(sb, data, range.from)
   const recs = was?.recs ?? await recommendations(sb, data, range).then((r) => r.slice(0, 2).map((x) => x.short)).catch(() => [])
   const built = await buildYourWeek(sb, data, ctx, words, {
@@ -379,9 +393,14 @@ export async function proposeYourWeek(sb: SupabaseClient, chatId: number, words:
 /** Words that ask for a fresh plan (the planner AI picks again) rather than a change to the card. */
 const FRESH = /\b(?:re-?plan|plan (?:my|the|this|next) week|plan (?:it |everything )?(?:again|from scratch)|start (?:over|again)|from scratch|(?:new|fresh|different) (?:plan|picks)|pick again)\b/i
 
-/** "plan next week" / "next week's plan" (any day of the week): next Mon–Sun. null: not asked. */
-export function weekAsked(words: string, today: string): { from: string; to: string } | null {
-  if (!/\b(?:plan|re-?plan|planning|sort|organi[sz]e)\b[^.?!\n]{0,25}\bnext week\b|\bnext week['’]?s plan\b/i.test(words)) return null
+/**
+ * "plan next week" / "next week's plan" (any day of the week): next Mon–Sun. null: not asked. `planWeek`: the message
+ * is already a request to plan a week ("for next week can you sort my plan", "next week: plan it with Vlad on Monday"),
+ * so "next week" anywhere is enough (not with "this week" too).
+ */
+export function weekAsked(words: string, today: string, planWeek = false): { from: string; to: string } | null {
+  const loose = planWeek && /\bnext week\b/i.test(words) && !/\bthis week\b/i.test(words)
+  if (!loose && !/\b(?:plan|re-?plan|planning|sort|organi[sz]e)\b(?:(?!\bweek\b)[^.?!\n]){0,25}\bnext week\b|\bnext week['’]?s plan\b/i.test(words)) return null
   const mon = addDays(weekStartISO(today), 7)
   return { from: mon, to: addDays(mon, 6) }
 }
@@ -391,44 +410,98 @@ const DAY_RE = /\b(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?\
 const STOP = new Set(['the', 'my', 'on', 'to', 'move', 'put', 'nothing', 'skip', 'drop', 'free', 'off', 'not', 'study', 'plan', 'please', 'day', 'keep', 'instead',
   'from', 'and', 'for', 'any', 'all', 'it', 'this', 'that', 'week', 'with', 'at', 'of', 'do', 'dont', 'can', 'you', 'there', 'want', 'have', 'only', 'leave', 'make', 'into'])
 
+/** His short names for subjects (kept although they're short): what each one also matches in an item's subject. */
+const ALIAS: Record<string, string[]> = { fm: ['further maths'], cs: ['computer science'], act: ['act'], smc: ['smc'], phys: ['physics'], ht2: [] }
+/** Training words: the optimiser's (parsePins / upperWords), never a study change. */
+const TRAIN = /\b(?:upper|lower|gym|training|train|speed|owen|plyo|core|sessions?|football|game|match|lift|lifting|workout)\b/i
+const DAY_W = '(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?'
+const MOVE = new RegExp(`\\b(?:move|put|shift|swap|instead)\\b|\\b(?:to|onto)\\s+${DAY_W}\\b`, 'i')
+const NEG = /\b(?:no|nothing|skip|drop|free|off|not|don['’]?t|cancel|remove)\b/i
+const ON_DAY = new RegExp(`\\bon\\s+${DAY_W}\\b`, 'i')
+/** "don't put FM on Friday" is a no, not a move */
+const DONT_MOVE = /\b(?:don['’]?t|do not|never)\s+(?:move|put)\b/i
+
 /**
  * Small study changes by code, on the planner's picks (no AI): "nothing on Friday" / "keep Fri free" (that day's study
- * goes), "no physics on Thu" (just that), "physics homework to Sat" (moved there). `said`: what changed, in words.
+ * goes), "no FM on Thu" (just that), "physics homework to Sat" / "move physics from Mon to Thu" / "physics to Thu, not
+ * Mon" (moved there, from the day he named, else the nearest day it's on). `said`: what changed, in words.
+ * `unclear`: a change named a day but the code couldn't tell what it's about (the caller asks the planner AI instead).
  */
-export function editStudy(items: YourWeek['studyItems'], words: string, range: { from: string; to: string }): { items: YourWeek['studyItems']; said: string[] } {
+export function editStudy(items: YourWeek['studyItems'], words: string, range: { from: string; to: string }): { items: YourWeek['studyItems']; said: string[]; unclear: boolean } {
   const out = items.map((d) => ({ date: d.date, items: [...d.items] }))
   const said: string[] = []
+  let unclear = false
   const dateOf = (w: string) => { const i = DOWS.indexOf(w.slice(0, 3).toLowerCase()); for (let d = range.from; d <= range.to; d = addDays(d, 1)) if (isoDow(d) === i + 1) return d; return null }
-  for (const part of words.split(/[.;,\n]|\band\b|\bbut\b/i)) {
-    const days = [...part.matchAll(DAY_RE)].map((m) => ({ date: dateOf(m[1]), at: m.index! })).filter((x): x is { date: string; at: number } => !!x.date)
-    if (!days.length) continue
-    const about = normTitle(part.replace(DAY_RE, ' ')).split(' ').filter((x) => x.length >= 3 && !STOP.has(x))
-    const hits = (it: PlanItem) => it.kind !== 'rest' && it.kind !== 'training' && (!about.length || about.some((a) => normTitle(it.title).split(' ').includes(a) || normTitle(it.subject ?? '') === a))
-    if (/\b(?:no|nothing|skip|drop|free|off|not|don['’]?t)\b/i.test(part)) {
+  const dayOf = (date: string) => { let d = out.find((x) => x.date === date); if (!d && date >= range.from && date <= range.to) { d = { date, items: [] }; out.push(d); out.sort((a, b) => a.date.localeCompare(b.date)) } return d ?? null }
+  const keyOf = (it: PlanItem) => (it.ref?.kind === 'task' ? `task:${it.ref.id}` : normTitle(it.title))
+  // what a change is about: his words for the work (short subject names like FM, ACT, CS kept)
+  const aboutOf = (part: string) => part.replace(DAY_RE, ' ').split(/[^A-Za-z0-9’']+/).filter(Boolean)
+    .map((raw) => ({ raw, w: normTitle(raw).replace(/ /g, '') }))
+    .filter(({ raw, w }) => !!w && !STOP.has(w) && (w.length >= 3 || w in ALIAS || /^[A-Z0-9]{2,}$/.test(raw))).map((x) => x.w)
+  const hitsOf = (about: string[]) => (it: PlanItem) => it.kind !== 'rest' && it.kind !== 'training' && (!about.length || about.some((a) => {
+    const subject = normTitle(it.subject ?? '')
+    return normTitle(it.title).split(' ').includes(a) || subject === a || subject.split(' ').includes(a) || (ALIAS[a] ?? []).includes(subject)
+  }))
+  const daysIn = (part: string) => [...part.matchAll(DAY_RE)].map((m) => ({ date: dateOf(m[1]), at: m.index! })).filter((x): x is { date: string; at: number } => !!x.date)
+  // (a part without a day goes with the next one: "move physics and FM to Sat")
+  const parts: string[] = []
+  let carry = ''
+  for (const p of words.split(/[.;,\n]|\band\b|\bbut\b/i)) {
+    if (!p.trim()) continue
+    if (!daysIn(p).length) { carry += ` ${p}`; continue }
+    parts.push(`${carry} ${p}`.trim()); carry = ''
+  }
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+    if (TRAIN.test(part)) continue
+    const days = daysIn(part)
+    const about = aboutOf(part)
+    const hits = hitsOf(about)
+    // a move ("FM to Sat", "physics on Thu"), unless he says not to ("don't put FM on Friday" is a no)
+    const dontMove = DONT_MOVE.test(part)
+    const isMove = !dontMove && (MOVE.test(part) || (!NEG.test(part) && about.length > 0 && ON_DAY.test(part)))
+    if (isMove) {
+      if (!about.length) { unclear = true; continue }
+      // from: a day after "from" / "instead of" / "not" (here or in a bare "not Mon" right after); to: the day after
+      // "to" / "on", else the first other day named
+      const fromRe = new RegExp(`\\b(?:from|instead of|not|rather than|off)\\s+(?:on\\s+)?${DAY_W}\\b`, 'gi')
+      const from = new Set([...part.matchAll(fromRe)].map((m) => dateOf(m[1])).filter((d): d is string => !!d))
+      const next = parts[i + 1]
+      if (next && !aboutOf(next).length && /^\s*(?:not|instead of|rather than)\b/i.test(next)) { for (const d of daysIn(next)) from.add(d.date); i++ }
+      const m = part.match(new RegExp(`\\b(?:to|onto|on)\\s+${DAY_W}\\b`, 'i'))
+      const to = (m ? dateOf(m[1]) : null) ?? days.find((d) => !from.has(d.date))?.date ?? null
+      const target = to ? dayOf(to) : null
+      if (!to || !target) { unclear = true; continue }
+      // (no day named to move it from: the nearest day it's on, never every day)
+      const sources = from.size ? [...from].filter((d) => d !== to)
+        : out.filter((d) => d.date !== to && d.items.some(hits)).map((d) => d.date)
+          .sort((a, b) => Math.abs(Date.parse(a) - Date.parse(to)) - Math.abs(Date.parse(b) - Date.parse(to)) || a.localeCompare(b)).slice(0, 1)
+      const moved: string[] = []
+      for (const date of sources) {
+        const d = out.find((x) => x.date === date)
+        const moving = d?.items.filter(hits) ?? []
+        if (!d || !moving.length) continue
+        d.items = d.items.filter((it) => !moving.includes(it))
+        // (one block per task a day: already there = just taken off the other day)
+        for (const it of moving) { if (!target.items.some((x) => keyOf(x) === keyOf(it))) target.items.push(it); if (!moved.includes(it.title)) moved.push(it.title) }
+      }
+      if (!moved.length) { unclear = true; continue }
+      said.push(`${moved.join(', ')} → ${dowShort(to)}`)
+    } else if (NEG.test(part) || dontMove) {
+      let any = false
       for (const { date } of days) {
         const d = out.find((x) => x.date === date)
         const gone = d?.items.filter(hits) ?? []
         if (!d || !gone.length) continue
+        any = true
         d.items = d.items.filter((it) => !gone.includes(it))
         said.push(`${about.length ? gone.map((it) => it.title).join(', ') : 'study'} off ${dowShort(date)}`)
       }
-    } else if (about.length && /\b(?:move|put|to|on)\b/i.test(part)) {
-      // the day after "to"/"on" (else the last day named) is where it goes
-      const m = part.match(/\b(?:to|on)\s+(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)/i)
-      const to = (m ? dateOf(m[1]) : null) ?? days.at(-1)!.date
-      const target = out.find((x) => x.date === to)
-      if (!target) continue
-      for (const d of out) {
-        if (d.date === to) continue
-        const moving = d.items.filter(hits)
-        if (!moving.length) continue
-        d.items = d.items.filter((it) => !moving.includes(it))
-        target.items.push(...moving)
-        said.push(`${moving.map((it) => it.title).join(', ')} → ${dowShort(to)}`)
-      }
-    }
+      // (work the code doesn't know at all: not a guess at something else; known work that isn't on that day: nothing to do)
+      if (!any && about.length && !out.some((d) => d.items.some(hits))) unclear = true
+    } else if (about.length) unclear = true
   }
-  return { items: out, said }
+  return { items: out, said, unclear }
 }
 
 async function sendYourWeek(sb: SupabaseClient, chatId: number, payload: PlanPayload, words: string, today: string, opts: { replaces?: Card | null; onReplace?: () => Promise<void>; head?: string } = {}): Promise<string> {

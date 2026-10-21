@@ -166,7 +166,7 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
   // day before), never an App idea
   const schoolOn = schoolDays(data.events, changes, date, addDays(date, 1), data.settings.schoolFreePeriods)
   const tests = testDays(data.goals, (d) => schoolOn.has(d))
-  const rules = dayRules(planning, tests, date)
+  const rules = dayRules(planning, tests, date, world1.rules ?? [])
   const testGoal = (() => { const t = tests.get(date) ?? tests.get(addDays(date, 1)); return t ? data.goals.find((g) => g.kind === 'test' && g.title === t) ?? null : null })()
   const okFor = (x: { title: string; subject?: string | null; heavy: boolean; taskId?: string | null; goalId?: string | null }) => {
     const task = x.taskId ? data.tasks.find((t) => t.id === x.taskId) ?? null : null

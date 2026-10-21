@@ -125,6 +125,49 @@ test('9 + 1 + 7 + 5 + 17: “plan next week” on a Wednesday: Mon 26 Oct – Su
   assert.deepEqual(study(again.text, 'Thu').filter((x) => x === 'Physics: SHM booklet'), ['Physics: SHM booklet'], 'one block per task a day')
   assert.match(again.text, /🗓 <b>Your week<\/b> · Mon 26 Oct – Sun 1 Nov/, 'still next week')
   assert.equal(chat.ai.byModel(PLAN).length, 1, 'the planner AI ran once (the fresh plan), not for the change')
+  // “no FM on Friday”: by code (FM is his name for Further Maths); a change the code can't read goes to the planner AI
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Changing it.', plan_week: true }))
+  await nat('no FM on Friday')
+  assert.doesNotMatch(last().text, /✏️ <b>Changed<\/b>: study off Fri/, 'never the whole day')
+  assert.equal(chat.ai.byModel(PLAN).length, 1)
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Changing it.', plan_week: true }))
+  chat.ai.script(PLAN, (body) => ({ days: [{ date: day(NEXT, 0), items: [{ ref: refIn(body, 'Vlad: mechanics questions'), title: 'Vlad: mechanics questions', minutes: 60, kind: 'focus', focus: '', why: 'due soon' }] }], note: '', push_back: '' }))
+  await nat('no biology on Friday')
+  assert.equal(chat.ai.byModel(PLAN).length, 2, 'unclear to the code: the planner AI re-plans with the card')
+  assert.doesNotMatch(last().text, /✏️ <b>Changed<\/b>:/, 'no code change claimed')
+  chat.noSurprises()
+})
+
+test('9: “for next week can you sort my plan” (next week said first) on a Wednesday plans Mon 26 Oct – Sun 1 Nov', { skip }, async () => {
+  await world()
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Planning next week.', plan_week: true }))
+  chat.ai.script(PLAN, (body) => {
+    const text = body.messages[0].content.map((c) => c.text).join('\n')
+    assert.match(text, /<day date="2026-10-26">/)
+    assert.doesNotMatch(text, /<day date="2026-10-2[1-5]">/, 'not the rest of this week')
+    return { days: [], note: '', push_back: '' }
+  })
+  await nat('for next week can you sort my plan')
+  assert.match(last().text, /🗓 <b>Your week<\/b> · Mon 26 Oct – Sun 1 Nov/)
+  chat.noSurprises()
+})
+
+test('7 + 1: “plan Monday” (one day): an App idea is never a block; the tracker’s “pause FM until 26 Oct” holds', { skip }, async () => {
+  await world()
+  await add('tasks', { title: 'Show focus periods in Settings', status: 'this_week', importance: 'must', source_text: 'can settings show my focus period' })
+  await add('app_ideas', { request: 'Show focus periods in Settings', source_text: 'can settings show my focus period' })
+  await add('plan_rules', { words: 'pause FM until 26 Oct', kind: 'pause', target: 'subject:Further Maths', starts_on: TODAY, ends_on: NEXT })
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Planning Monday.', plan_day: NEXT }))
+  chat.ai.script(PLAN, (body) => {
+    const item = (name, minutes) => ({ ref: refIn(body, name) ?? '', title: name, minutes, kind: 'focus', focus: '', why: 'due soon' })
+    return { items: [item('Vlad: mechanics questions', 60), item('Show focus periods in Settings', 30), item('FM homework: complex numbers ex 2B', 60)], note: '', push_back: '' }
+  })
+  await nat('plan Monday')
+  const card = last()
+  show(card)
+  assert.match(card.text, /<b>Vlad: mechanics questions<\/b>/)
+  assert.doesNotMatch(card.text, /Show focus periods/, 'an App idea')
+  assert.doesNotMatch(card.text, /FM homework/, 'FM is paused until Mon 26 Oct')
   chat.noSurprises()
 })
 
@@ -169,6 +212,12 @@ test('1 (bot): “don’t start physics before Mon 26 Oct” sets its start date
   await chat.tap(chat.button(card, 'Apply'), card.message_id)
   const ws = (await q(`select to_char(window_start, 'YYYY-MM-DD') d from tasks where id = $1`, [ids['t-phys'].id]))[0].d
   assert.equal(ws, NEXT)
+  // a start after its deadline: it could never be planned, so the card says so instead
+  chat.ai.script(CHAT, (body) => brain({ intent: 'instruction', reply: 'Vlad waits.',
+    actions: [act({ op: 'not_before', ref: refIn(body, 'Vlad: mechanics questions') ?? '', date: day(NEXT, 3), words: 'Thu 29 Oct' })] }))
+  await nat('don’t start Vlad before Thu 29 Oct')
+  assert.match(last().text, /Vlad: mechanics questions” is due Wed 28 Oct, before Thu 29 Oct/)
+  assert.equal(chat.button(last(), 'Apply'), undefined, 'nothing to apply')
   chat.ai.script(CHAT, brain({ intent: 'instruction', reply: 'Only ACT until the retake.', actions: [act({ op: 'focus_period', value: 'until=2026-10-25; only=ACT', words: '25 Oct' })] }))
   await nat('until 25 Oct only ACT')
   card = last()

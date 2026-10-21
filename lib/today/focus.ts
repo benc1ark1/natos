@@ -55,11 +55,37 @@ export function testDays(goals: { kind: string; title: string; target_date: stri
   return out
 }
 
-export type DayRules = { focus: FocusPeriod | null; test: string | null; eve: string | null }
+export type Pause = { names: string[]; until: string }
+export type DayRules = { focus: FocusPeriod | null; test: string | null; eve: string | null; paused?: Pause[] }
+/** The study tracker's dated rules (plan_rules, lib/tracker/bot-fast.ts): "pause physics until 25 Oct", "focus on ACT until 25 Oct". */
+export type TrackerRule = { kind: string; target: string; words: string; startsOn: string; endsOn: string }
 
-/** What holds on this day: its focus period, a test that takes the day, or the day before one. */
-export const dayRules = (planning: unknown, tests: Map<string, string>, date: string): DayRules =>
-  ({ focus: focusOn(planning, date), test: tests.get(date) ?? null, eve: tests.get(addDays(date, 1)) ?? null })
+/** The subjects a tracker rule's target names (null: not a whole subject, e.g. "getting ahead"). */
+function ruleSubjects(target: string): string[] | null {
+  const [head, ...rest] = target.trim().split(':')
+  const arg = rest.join(':').trim()
+  switch (head.toLowerCase()) {
+    case 'act': return ['ACT']
+    case 'physics': return ['Physics']
+    case 'maths': case 'math': return ['Maths', 'Further Maths', 'FM']
+    case 'subject': return arg ? [arg] : null
+    case 'subjects': { const l = arg.split(/\s*,\s*|\s*\+\s*/).filter(Boolean); return l.length ? l : null }
+    default: return null
+  }
+}
+
+/**
+ * What holds on this day: its focus period, a test that takes the day, or the day before one; and the tracker's live
+ * rules the same way: a subject paused until a date is left out, and "focus on ACT until 25 Oct" (a top-priority rule
+ * in those words) is a focus period too (one he set with focus_period wins).
+ */
+export function dayRules(planning: unknown, tests: Map<string, string>, date: string, tracker: TrackerRule[] = []): DayRules {
+  const live = tracker.filter((r) => r.startsOn <= date && date <= r.endsOn)
+  const paused = live.filter((r) => r.kind === 'pause').map((r) => ({ names: ruleSubjects(r.target) ?? [], until: r.endsOn })).filter((p) => p.names.length)
+  const boost = live.find((r) => r.kind === 'boost' && /\b(?:focus|only)\b/i.test(r.words) && ruleSubjects(r.target)?.length === 1)
+  const focus = focusOn(planning, date) ?? (boost ? { from: boost.startsOn, until: boost.endsOn, only: ruleSubjects(boost.target)![0] } : null)
+  return { focus, test: tests.get(date) ?? null, eve: tests.get(addDays(date, 1)) ?? null, ...(paused.length ? { paused } : {}) }
+}
 
 /**
  * Why this can't go on this day (null: it can). `deadline` = the task's due date (if a task); `until` = the last day
@@ -75,6 +101,8 @@ export function blockedWhy(x: { title: string; subject?: string | null; heavy: b
   // (the test day keeps only the test's own light warm-up; the day before, nothing heavy, the test's work included)
   if (rules.test && (!x.ofTest || x.heavy)) return `${rules.test} today: nothing else`
   if (rules.eve && x.heavy) return `the day before ${rules.eve}: light only`
+  const pause = rules.paused?.find((p) => p.names.some((n) => inFocus({ only: n }, x)))
+  if (pause) return `${pause.names[0]} paused until ${dowShort(pause.until)} ${shortDate(pause.until)}`
   if (rules.focus && !inFocus(rules.focus, x)) return focusWords(rules.focus)
   return null
 }

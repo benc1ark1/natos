@@ -220,7 +220,7 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
       return 'plan'
     }
     if (was.week || d.plan?.week) {
-      await proposeWeekPlan(sb, chatId, message, ctx, data, { replaces: card, onReplace: () => replaceOld(sb, chatId, card) })
+      await proposeWeekPlan(sb, chatId, message, ctx, data, { replaces: card, onReplace: () => replaceOld(sb, chatId, card), asked: d.intent === 'plan' && !!d.plan?.week })
       return 'plan'
     }
     await proposePlan(sb, chatId, { date: d.plan?.date && d.intent === 'plan' ? d.plan.date : was.date ?? todayISO(), from: d.plan?.from ?? null, minutes: d.plan?.minutes ?? null, until: d.plan?.until ?? null, energy: d.plan?.energy ?? null, words: message },
@@ -249,7 +249,7 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
     case 'plan':
       if (d.plan!.training === 'note') await noteWeek(sb, chatId, message, data)
       else if (d.plan!.training?.length) await proposeTrainingPlan(sb, chatId, message, d.plan!.training, data)
-      else if (d.plan!.week) await proposeWeekPlan(sb, chatId, message, ctx, data)
+      else if (d.plan!.week) await proposeWeekPlan(sb, chatId, message, ctx, data, { asked: true })
       else await proposePlan(sb, chatId, { ...d.plan!, words: message }, ctx, data)
       return 'plan'
     default:
