@@ -103,13 +103,16 @@ export function optWorldOf(w: WeekWorld, keep: Planned[] = w.planned.filter((b) 
   }
 }
 
-/** His test days in the week (date → what: "ACT retake"), and the days before them (date → why only light training). */
-export function testDaysOf(w: Pick<WeekWorld, 'mental' | 'planning'>): { on: Map<string, string>; eve: Map<string, string> } {
+/** His test days in the week (date → what: "ACT retake"), and the days before them (date → why only light training).
+ *  Like the study planner (lib/today/focus.ts testDays): only a test on a day without school takes the day; a class test
+ *  on a school day (FM HT2, Wed 4 Nov) is a normal day. */
+export function testDaysOf(w: Pick<WeekWorld, 'mental' | 'planning'> & Partial<Pick<WeekWorld, 'events' | 'changes' | 'from' | 'to' | 'settings'>>): { on: Map<string, string>; eve: Map<string, string> } {
   const on = new Map<string, string>(), eve = new Map<string, string>()
   const load = moreSettingsOf(w.planning).mentalTest
+  const school = w.events && w.from && w.to ? schoolDays(w.events, w.changes ?? [], addDays(w.from, -1), addDays(w.to, 1), w.settings?.schoolFreePeriods) : new Map()
   for (const m of w.mental ?? []) {
-    if (m.test) on.set(m.date, m.items.find((i) => i.load === load && !/ tomorrow$/.test(i.what))?.what ?? 'a test')
-    if (m.testEve) eve.set(m.date, `the day before ${m.items.find((i) => / tomorrow$/.test(i.what))?.what.replace(/ tomorrow$/, '') ?? 'a test'}`)
+    if (m.test && !school.has(m.date)) on.set(m.date, m.items.find((i) => i.load === load && !/ tomorrow$/.test(i.what))?.what ?? 'a test')
+    if (m.testEve && !school.has(addDays(m.date, 1))) eve.set(m.date, `the day before ${m.items.find((i) => / tomorrow$/.test(i.what))?.what.replace(/ tomorrow$/, '') ?? 'a test'}`)
   }
   return { on, eve }
 }

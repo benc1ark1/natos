@@ -57,12 +57,18 @@ test('item 2 · THIS week: nothing on the ACT day (Sun 25 Oct), only light on Sa
   assert.match(ow.lightOnly.get(day(THIS, 5)), /the day before ACT retake/)
 })
 
-test('item 2 · SCHOOL week: nothing placed on FM HT2 day (Wed 4 Nov); Tue 3 Nov light only (Owen’s speed goes light, upper moves)', () => {
-  const p = planTraining(world(SCHOOL))
-  assert.deepEqual(on(p, HT2), [], lines(p))
-  const tue = on(p, day(SCHOOL, 1))
-  assert.ok(tue.length && tue.every((s) => s.intensity === 'light'), lines(p))
-  assert.ok(!uppers(p).some((s) => s.date === day(SCHOOL, 1)), 'upper is never lighter: not on the eve')
+test('item 2 · SCHOOL week: a class test on a school day (FM HT2, Wed 4 Nov) is a normal day, like the study planner; Owen’s speed stays Tue 18:30', async () => {
+  const { testDaysOf } = await import('../lib/week.ts')
+  const w = world(SCHOOL)
+  const t = testDaysOf(w)
+  assert.ok(!t.on.has(HT2) && !t.eve.has(day(SCHOOL, 1)), 'HT2 on a school day doesn’t take the day')
+  const p = planTraining(w)
+  const speed = p.placed.find((s) => s.key.startsWith('speed#'))
+  assert.deepEqual([speed.date, speed.start], [day(SCHOOL, 1), '18:30'], lines(p))
+  assert.ok(p.placed.some((s) => s.date === HT2), `training is allowed on a school-day test:
+${lines(p)}`)
+  // the ACT on Sun 25 Oct (no school) still takes the day
+  assert.ok(testDaysOf(world(THIS)).on.has(ACT_DAY))
 })
 
 // ---------------------------------------------------------------------------

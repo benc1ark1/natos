@@ -302,6 +302,10 @@ export function planLoad(needs: LoadNeed[], w: LoadWorld): LoadPlan {
   // what a placed session takes up that day: the travel there, the session, the travel back and a short break
   const usedOn = (date: string, upto: number) => chosen.slice(0, upto).filter((c): c is NonNullable<Choice> => !!c && c.s.date === date)
     .map((c) => [minutesOf(c.s.start) - (c.s.before ?? 0), minutesOf(c.s.end) + (c.s.after ?? 0) + 15] as [number, number])
+  // (whether a fixed day can take a session at all: the other sessions with a set time that day count, like Owen's speed
+  // Tue 18:30 after school football, so his usual upper Tue moves to another day instead of being left out)
+  const setTimesOn = (date: string, self: LoadNeed) => order.filter((m) => m !== self && m.preferred === date && m.preferStart)
+    .map((m) => [minutesOf(m.preferStart!), minutesOf(m.preferStart!) + m.minutes + 15] as [number, number])
   const uppers = order.map((n, i) => (n.type === 'upper' ? i : -1)).filter((i) => i >= 0)
   const lastUpper = uppers.length ? Math.max(...uppers) : -1
   // one of each kind a day: never a second upper that day (Fri 12:30 and 15:00), nor one on top of the same kind in his
@@ -330,7 +334,7 @@ export function planLoad(needs: LoadNeed[], w: LoadWorld): LoadPlan {
         let pick: { at: { start: string; end: string }; wh: Where | null } | null = null
         // his time: a pin's, else the time on the session's fixed day ("upper Sat 09:30")
         const start = pin?.start ?? (n.preferStart && date === n.preferred ? n.preferStart : null)
-        const used = alone ? [] : usedOn(date, i)
+        const used = alone ? setTimesOn(date, n) : usedOn(date, i)
         for (const wh of wheres) {
           const at = slotFor(rooms.get(date), n.minutes, lv === 'heavy', used, w, start, wh)
           if (at && (!pick || (wh?.extra ?? 0) < (pick.wh?.extra ?? 0))) pick = { at, wh }
