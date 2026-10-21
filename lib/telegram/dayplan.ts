@@ -24,6 +24,7 @@ import type { ViewData } from './views'
 import { noteWeek, trainText, type TrainingInfo } from './trainplan'
 import { proposeYourWeek, yourWeekText, type YourWeek } from './yourweek'
 import { schoolDays } from '../school'
+import { blockedWhy, dayRules, testDays } from '../today/focus'
 import { looksLikeWeek } from './weekread'
 
 export type PlanPayload = {
@@ -82,7 +83,22 @@ export async function buildPlan(req: PlanRequest, ctx: PlannerContext, data: Vie
   }, ctx, onUsage)
   if (!res.ok) return { message: `⚠️ ${res.error} Nothing planned.` }
 
-  const placed = placeItems(res.items, slots, data.settings, { budget, energy, until: toHHMM(Math.min(until, 24 * 60 - 1)) })
+  // what may go on that day (lib/today/focus.ts): not before a task's start date, a focus period's own work, nothing
+  // but the test on a test day (light the day before); one block per task
+  const sdays = schoolDays(data.events, data.changes, date, addDays(date, 1), data.settings.schoolFreePeriods)
+  const tests = testDays(data.goals, (d) => sdays.has(d))
+  const rules = dayRules(data.planning, tests, date)
+  const test = tests.get(date) ?? tests.get(addDays(date, 1))
+  const seen = new Set<string>()
+  const items = res.items.filter((it) => {
+    const t = it.ref?.kind === 'task' ? data.tasks.find((x) => x.id === it.ref!.id) ?? null : null
+    const k = t ? `task:${t.id}` : it.title
+    if (seen.has(k)) return false
+    seen.add(k)
+    const ofTest = !!test && (it.title.toLowerCase().includes(test.toLowerCase()) || (/\bACT\b/.test(test) && /\bACT\b/.test(it.title)))
+    return !blockedWhy({ title: it.title, heavy: it.kind === 'focus' || it.kind === 'training', task: t, deadline: t ? deadlineOf(t) : null, ofTest }, date, rules, { until: date, later: false })
+  })
+  const placed = placeItems(items, slots, data.settings, { budget, energy, until: toHHMM(Math.min(until, 24 * 60 - 1)) })
   // a last guard: a block breaking a rule is left out, and a plan that still breaks one is never shown
   const blocks = placed.blocks.filter((b) => planProblems([b], slots, data.settings, null).length === 0)
   const problems = planProblems(blocks, slots, data.settings, budget)

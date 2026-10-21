@@ -129,6 +129,7 @@ export async function loadPlannerContext(sb: SupabaseClient): Promise<PlannerCon
     const bits = [
       t.importance === 'must' ? 'must' : 'nice',
       deadline ? `${deadlineLabel(t, today)} (${day(deadline)})` : 'no date',
+      t.window_start && t.window_start.slice(0, 10) > today ? `not before ${day(t.window_start.slice(0, 10))}` : '',
       t.duration_minutes ? `~${t.duration_minutes} min` : '',
       t.subject_id ? subjectName.get(t.subject_id) ?? '' : '',
       t.project_id && projectName.has(t.project_id) ? `project: ${projectName.get(t.project_id)}` : '',

@@ -488,7 +488,7 @@ export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
     const roi = (card.payload as { roi?: { key: string; title: string; savesMin: number; weekStart: string } }).roi
     if (roi) await recordSuggestion(sb, roi, roi.weekStart, 'applied')
     // his set-up or calendar changed (clean-up, Owen's days, a gap-like change): the week re-fits (lib/telegram/refit.ts)
-    if (card.payload.cleanup || actions.some((a) => ['owen_days', 'game_week', 'setup_set', 'session_ignore', 'school_day', 'upper_week', 'block_skip'].includes(a.op))) {
+    if (card.payload.cleanup || actions.some((a) => ['owen_days', 'game_week', 'setup_set', 'session_ignore', 'school_day', 'upper_week', 'block_skip', 'focus_period', 'not_before'].includes(a.op))) {
       const { refitAfterChange } = await import('./refit')
       await refitAfterChange(sb, chatId, card.payload.cleanup ? 'after the clean-up' : 'with that change').catch(() => null)
       if (card.payload.cleanup) { const { refreshOwenCard } = await import('./owen'); await refreshOwenCard(sb, chatId, 'after the clean-up').catch(() => null) }

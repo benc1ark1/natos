@@ -30,7 +30,9 @@ import { looksLikeWeek } from './weekread'
 import type { Pin } from '../load'
 import { recommendations } from './roi'
 import { schoolDays, withSchool, type SchoolWindow } from '../school'
-import { courses as mathsCourses, weekBlocks } from '../maths'
+import { courses as mathsCourses, modeOf, weekBlocks } from '../maths'
+import { deadlineOf } from '../tasks'
+import { ACT_FILL_WHY, actFillDay, actFillers, blockedWhy, dayRules, focusLines, notYet, rulesForAI, testDays } from '../today/focus'
 import { mathsWorld } from './views-more'
 import { weekRulesLine } from '../tracker/bot-data'
 import { loadActWorld } from '../act/data'
@@ -54,6 +56,7 @@ export type YourWeek = {
   studyItems: { date: string; items: PlanItem[] }[]   // what the planner picked, kept so a 🔁 doesn't ask the AI again
   guesses: string[]                                   // what's still a guess (answers to the gap questions replace them)
   rules?: string | null                               // item 1: "📌 Rules this week: …" (the study tracker's temporary rules)
+  focus?: string[]                                    // "🎯 Focus: only ACT until Sun 25 Oct" · "⏳ From Mon 26 Oct: …" (lib/today/focus.ts)
   upperTarget?: { id: string; count: number } | null  // this week's upper count, if it differs from his target
 }
 
@@ -105,24 +108,61 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
   // ACT: planned by code, the same as Today (lib/act/engine.ts: the retake countdown, holidays, test days), with his own
   // ACT tasks on the days he gave them (their minutes are part of that day's ACT time)
   const act = await loadActWorld(sb, data.today).catch(() => null)
-  const isAct = (it: PlanItem) => it.why === ACT_WHY || /\bACT\b/.test(it.title)
+  const isAct = (it: PlanItem) => it.why === ACT_WHY || it.why === ACT_FILL_WHY || /\bACT\b/.test(it.title)
     || (it.ref?.kind === 'task' && isActTask(data.tasks.find((t) => t.id === it.ref!.id) ?? { title: '', subject_id: null }, act?.subjectId))
   const actItems = (date: string): PlanItem[] => {
     if (!act) return []
     const picks = actPicks(act, { date, dow: isoDow(date), mode: dayMode(data.planning, date), studyMinutes: 0, actTaskMin: actTaskMinutes(data.tasks, date, act.subjectId) })
     return [
-      ...picks.map((p): PlanItem => ({ title: p.title, minutes: p.minutes, kind: p.heavy ? 'focus' : 'light', ref: null, why: ACT_WHY,
+      ...picks.map((p): PlanItem => ({ title: p.title, minutes: p.minutes, kind: p.heavy ? 'focus' : 'light', ref: null, why: ACT_WHY, subject: 'ACT',
         ...(p.after ? { after: picks.find((x) => x.key === p.after)?.title } : {}) })),
-      ...actTasksOn(data.tasks, date, act.subjectId).map((t): PlanItem => ({ title: t.title, minutes: t.duration_minutes ?? 30, kind: 'focus', ref: { kind: 'task', id: t.id }, why: ACT_WHY })),
+      ...actTasksOn(data.tasks, date, act.subjectId).map((t): PlanItem => ({ title: t.title, minutes: t.duration_minutes ?? 30, kind: 'focus', ref: { kind: 'task', id: t.id }, why: ACT_WHY, subject: 'ACT' })),
     ]
   }
+  // what may go on each day (lib/today/focus.ts): not before a task's start date, Later only if due this week, a focus
+  // period's own work only, nothing but the test on a test day (light the day before), never an App idea
+  const ideas = await openIdeas(sb)
+  // (a test the day after the week counts too: its eve is in the week)
+  const schoolTo = schoolDays(w.events, w.changes, w.from, addDays(w.to, 1), w.settings.schoolFreePeriods)
+  const tests = testDays(data.goals, (date) => schoolTo.has(date))
+  const rulesOf = (date: string) => dayRules(data.planning, tests, date)
+  const taskOf = (it: PlanItem) => (it.ref?.kind === 'task' ? data.tasks.find((t) => t.id === it.ref!.id) ?? null : null)
+  const subjectOf = (it: PlanItem) => it.subject ?? (isAct(it) ? 'ACT' : maths.subjects.find((s) => s.id === taskOf(it)?.subject_id)?.name ?? null)
+  const ofTest = (it: PlanItem, date: string) => {
+    const title = tests.get(date) ?? tests.get(addDays(date, 1))
+    const g = title ? data.goals.find((x) => x.kind === 'test' && x.title === title) : null
+    return !!g && ((/\bACT\b/.test(g.title) && isAct(it)) || (!!g.subject_id && taskOf(it)?.subject_id === g.subject_id) || it.title.toLowerCase().includes(g.title.toLowerCase()))
+  }
+  const blockedOn = (it: PlanItem, date: string) => {
+    const t = taskOf(it)
+    return blockedWhy({ title: it.title, subject: subjectOf(it), heavy: it.kind === 'focus' || it.kind === 'training', task: t, deadline: t ? deadlineOf(t) : null, ofTest: ofTest(it, date) }, date, rulesOf(date), { until: w.to, ideas })
+  }
+  // the spec's order for what's left (my-spec 40): deadlines → tests and prep → training → this week's priorities → the rest
+  const rankOf = (it: PlanItem) => {
+    const t = taskOf(it), due = t ? deadlineOf(t) : null
+    if (it.kind === 'rest') return 9
+    if ((due && due <= w.to) || /^📝 /.test(it.title)) return 1
+    if (it.ref?.kind === 'goal' || t?.goal_id || /^🔥 /.test(it.title) || (it.why === ACT_WHY && !!act?.retake)) return 2
+    if (it.kind === 'training') return 3
+    if ((t && (t.status === 'today' || t.status === 'this_week' || t.is_key)) || ['topic', 'mistake', 'target'].includes(it.ref?.kind ?? '')) return 4
+    return 5
+  }
   if (!studyItems) {
-    const res = await makeWeekPlan({ days, words: `${words}\nStudy preferences: best focus time ${more.focusBest}; study blocks at most ${more.maxBlockMin} minutes.\nMaths and Further Maths (their homework, tests and topics) are planned by the app itself: don't add any maths or further maths items.\nACT (its practice tests, sections, misses and his ACT tasks) is planned by the app itself: don't add any ACT items.`, previous: opts.previous ?? null }, ctx, opts.onUsage)
+    // the planner only sees the days it can add to (a day that's only ACT or only the test has nothing to pick)
+    const open = days.filter((d) => { const r = rulesOf(d.date); return !r.test && !(r.focus && /^act$/i.test(r.focus.only)) })
+    const res = open.length
+      ? await makeWeekPlan({ days: open, words: `${words}\nStudy preferences: best focus time ${more.focusBest}; study blocks at most ${more.maxBlockMin} minutes.\nMaths and Further Maths (their homework, tests and topics) are planned by the app itself: don't add any maths or further maths items.\nACT (its practice tests, sections, misses and his ACT tasks) is planned by the app itself: don't add any ACT items.${rulesForAI(open.map((d) => d.date), rulesOf, data.tasks, w.to)}`, previous: opts.previous ?? null }, ctx, opts.onUsage)
+      : { ok: true as const, days: [], note: '', pushBack: '', dropped: 0 }
     if (!res.ok) return { message: `⚠️ ${res.error} Nothing planned.` }
     const gameDays = new Set(plan.days.filter((d) => d.sessions.some((x) => x.fixed && /game|match/i.test(x.title))).map((d) => d.date))
-    const mb = weekBlocks(maths, days.map((d) => ({ date: d.date, skip: gameDays.has(d.date) })))
+    // maths goes on the days it may (not a focus period on something else, a test day or its eve, nor before its homework can start)
+    const startOf = (id: string) => data.tasks.find((t) => t.id === id) ?? {}
+    const mathsFree = { ...maths, tasks: maths.tasks.filter((t) => !notYet(startOf(t.id), w.to)) }
+    const mode = modeOf(mathsFree)
+    const mathsOff = (date: string) => { const r = rulesOf(date); return !!r.test || !!r.eve || (!!r.focus && !/math|^fm$/i.test(r.focus.only)) || (mode.kind === 'homework' && notYet(startOf(mode.tasks[0].id), date)) }
+    const mb = weekBlocks(mathsFree, days.map((d) => ({ date: d.date, skip: gameDays.has(d.date) || mathsOff(d.date) })))
     studyItems = days.map((d) => ({ date: d.date, items: [
-      ...(mb.get(d.date) ?? []).map((b): PlanItem => ({ title: b.title, minutes: b.minutes, kind: 'focus', ref: b.taskId ? { kind: 'task', id: b.taskId } : null, why: b.why })),
+      ...(mb.get(d.date) ?? []).map((b): PlanItem => ({ title: b.title, minutes: b.minutes, kind: 'focus', ref: b.taskId ? { kind: 'task', id: b.taskId } : null, why: b.why, subject: b.course?.name ?? null })),
       ...actItems(d.date),
       ...(res.days.find((x) => x.date === d.date)?.items ?? []).filter((it) => !isMaths(it) && !isAct(it)),
     ] }))
@@ -131,15 +171,23 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
   const blocks: Block[] = plan.placed.map(blockOf)
   const unplaced: PlanPayload['unplaced'] = []
   for (const d of days) {
+    const r = rulesOf(d.date)
+    // one block per task a day (or per title), in the spec's order; what can't go on this day is left out
+    const seen = new Set<string>()
+    const kept = [...(studyItems.find((x) => x.date === d.date)?.items ?? [])].map((it, i) => ({ it, i })).sort((a, b) => rankOf(a.it) - rankOf(b.it) || a.i - b.i).map((x) => x.it)
+      .filter((it) => { const k = it.ref?.kind === 'task' ? `task:${it.ref.id}` : normTitle(it.title); if (seen.has(k)) return false; seen.add(k); return !blockedOn(it, d.date) })
+    // a focus period on ACT: the free time left goes to ACT (reading, grammar, ACT maths), after everything else
+    const fill = actFillDay(r) ? actFillers(more.maxBlockMin).filter((f) => !kept.some((it) => normTitle(it.title) === normTitle(f.title))) : []
     // (an ACT block keeps its length: a full timed test is one sitting; its minutes come on top of the day's focus limit)
-    const all = (studyItems.find((x) => x.date === d.date)?.items ?? []).map((it) => ({ ...it, minutes: isAct(it) ? it.minutes : Math.min(it.minutes, more.maxBlockMin) }))
-    const actMin = all.filter((it) => isAct(it) && it.kind === 'focus').reduce((n, it) => n + it.minutes, 0)
+    const all = [...kept, ...fill].map((it) => ({ ...it, minutes: isAct(it) ? it.minutes : Math.min(it.minutes, more.maxBlockMin) }))
+    const actMin = all.filter((it) => isAct(it) && it.kind === 'focus' && it.why !== ACT_FILL_WHY).reduce((n, it) => n + it.minutes, 0)
     // never plan a task on a day after its deadline
     const late = all.filter((it) => it.ref?.kind === 'task' && (() => { const r = [...ctx.refs.values()].find((x) => x.id === it.ref!.id); return !!r?.deadline && r.deadline < d.date })())
     unplaced.push(...late.map((it) => ({ title: it.title, minutes: it.minutes, reason: 'that’s after its deadline', date: d.date })))
     const placed = placeItems(all.filter((it) => !late.includes(it)), slots.get(d.date) ?? [], w.settings, { budget: d.budget == null ? null : d.budget + actMin, energy: d.energy })
     blocks.push(...placed.blocks.filter((b) => planProblems([b], slots.get(d.date) ?? [], w.settings, null).length === 0).map((b) => ({ ...b, date: d.date })))
-    unplaced.push(...placed.unplaced.map((u) => ({ ...u, date: d.date })))
+    // (ACT free-time blocks are only there if there's room: never "didn't fit")
+    unplaced.push(...placed.unplaced.filter((u) => !fill.some((f) => f.title === u.title)).map((u) => ({ ...u, date: d.date })))
   }
   blocks.sort((a, b) => (a.date! + a.start).localeCompare(b.date! + b.start))
 
@@ -174,11 +222,19 @@ export async function buildYourWeek(sb: SupabaseClient, data: ViewData, ctx: Pla
   }
   const yourWeek: YourWeek = {
     review: opts.review ?? [], recs: opts.recs ?? [], days: ydays, training: info, studyItems, guesses,
-    rules: await weekRulesLine(sb, w.from, w.to).catch(() => null),
+    rules: await weekRulesLine(sb, w.from, w.to).catch(() => null), focus: focusLines(data.planning, data.tasks, w.from, w.to),
     upperTarget: upperTarget && t != null && t !== upperTarget.target_count ? { id: upperTarget.id, count: t } : null,
   }
   return { payload: { date: w.from, week: { from: w.from, to: w.to }, energy: 'normal', energyGiven: false, blocks, unplaced, tbc: plan.tbc, note, pushBack, yourWeek } as PlanPayload }
 }
+
+/** His open App ideas (requests for Claude Code): never planned as work. None before speed.sql / on an error. */
+async function openIdeas(sb: SupabaseClient): Promise<{ request: string; source_text: string | null }[]> {
+  const { data, error } = await sb.from('app_ideas').select('request,source_text').eq('status', 'open')
+  return error ? [] : (data ?? []) as { request: string; source_text: string | null }[]
+}
+
+const normTitle = (s: string) => s.toLowerCase().replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
 
 /** What the plan still guesses (wake/bed/routines, session lengths, travel): said once at the bottom. */
 function guessList(planning: unknown, travelGuess: boolean): string[] {
@@ -200,7 +256,7 @@ export async function weekReview(sb: SupabaseClient, data: ViewData, from: strin
   const start = isoDow(from) === 1 ? addDays(from, -7) : weekStartISO(addDays(from, -7))
   const end = addDays(start, 6) < data.today ? addDays(start, 6) : addDays(data.today, -1)
   const [blocks, logs, whoop] = await Promise.all([
-    sb.from('plan_blocks').select('on_date,title,kind,status').gte('on_date', start).lte('on_date', end).in('status', ['planned', 'done']).then((r) => (r.error ? [] : r.data ?? []) as { on_date: string; title: string; kind: string; status: string }[]),
+    sb.from('plan_blocks').select('on_date,title,kind,status,task_id').gte('on_date', start).lte('on_date', end).in('status', ['planned', 'done']).then((r) => (r.error ? [] : r.data ?? []) as { on_date: string; title: string; kind: string; status: string; task_id?: string | null }[]),
     sb.from('target_logs').select('done_on,amount').gte('done_on', start).lte('done_on', end).then((r) => (r.error ? [] : r.data ?? []) as { done_on: string; amount: number }[]),
     sb.from('whoop_days').select('sleep_minutes,recovery').gte('on_date', start).lte('on_date', end).then((r) => (r.error ? [] : r.data ?? []) as { sleep_minutes: number | null; recovery: number | null }[]),
   ])
@@ -214,9 +270,12 @@ export async function weekReview(sb: SupabaseClient, data: ViewData, from: strin
   if (sleep.length) { const avg = Math.round(sleep.reduce((a, x) => a + x.sleep_minutes!, 0) / sleep.length); good.push(`sleep ${Math.floor(avg / 60)}h ${String(avg % 60).padStart(2, '0')}m a night`) }
   const rec = whoop.filter((x) => x.recovery != null)
   if (rec.length) good.push(`recovery ${Math.round(rec.reduce((a, x) => a + x.recovery!, 0) / rec.length)}% avg`)
-  const missed = blocks.filter((b) => b.status === 'planned')
-  const overdue = data.tasks.filter((t) => t.importance === 'must' && t.status !== 'someday' && t.due_at && t.due_at.slice(0, 10) < data.today)
-  const slipped = [...missed.map((b) => `${parseSessionTitle(b.title).name} (${dowShort(b.on_date)})`), ...overdue.map((t) => t.title)]
+  // (a block for a task he has since done or archived didn't slip: data.tasks holds only the open ones)
+  const open = new Set(data.tasks.filter((t) => !t.archived_at && t.status !== 'completed').map((t) => t.id))
+  const missed = blocks.filter((b) => b.status === 'planned' && (!b.task_id || open.has(b.task_id)))
+  const overdue = data.tasks.filter((t) => !t.archived_at && t.status !== 'completed' && t.importance === 'must' && t.status !== 'someday' && t.due_at && t.due_at.slice(0, 10) < data.today)
+  // (an overdue task with a missed block is said once)
+  const slipped = [...missed.map((b) => `${parseSessionTitle(b.title).name} (${dowShort(b.on_date)})`), ...overdue.filter((t) => !missed.some((b) => b.task_id === t.id)).map((t) => t.title)]
   const lines: string[] = []
   lines.push(good.length ? `✅ <b>Last week</b>: ${esc(good.join(' · '))}` : '✅ <b>Last week</b>: nothing tracked yet (tick sessions on the pinned Today and this fills in)')
   if (slipped.length) lines.push(`⚠️ <b>Slipped</b>: ${esc(slipped.slice(0, 3).join(', '))}${slipped.length > 3 ? ` (+${slipped.length - 3} more)` : ''}`)
@@ -234,6 +293,7 @@ export function yourWeekText(p: PlanPayload, today: string): string {
   const lines = [`🗓 <b>Your week</b> · ${day(p.week!.from)} – ${day(p.week!.to)}`]
   lines.push(...y.review)
   if (y.rules) lines.push(y.rules)
+  for (const f of y.focus ?? []) lines.push(esc(f))
   for (const r of y.recs.slice(0, 2)) lines.push(`💡 ${esc(r)}`)
   const first = y.days[0]
   if (first) lines.push(`<i>☀️ Wake ${first.wake} + morning routine · 🌙 night routine from ${first.nightStart}, bed ${first.bed}${y.guesses.includes('wake-up and bedtime') ? ' (guess)' : ''}; earlier before tests and games.</i>`)
@@ -292,22 +352,83 @@ export async function proposeYourWeek(sb: SupabaseClient, chatId: number, words:
   opts: { replaces?: Card | null; onReplace?: () => Promise<void>; head?: string; pins?: Map<string, Pin>; auto?: boolean; range?: { from: string; to: string } } = {}): Promise<string | null> {
   const { noteWeek } = await import('./trainplan')
   if (looksLikeWeek(words)) await noteWeek(sb, chatId, words, data, { quiet: true })   // his week typed out: read it first
-  const was = opts.replaces?.payload.yourWeek ?? null
-  const range = opts.range ?? (opts.replaces?.payload.week ?? weekRange(data.today))
-  // a change that only moves training ("upper Sat at PureGym", "upper 3x") keeps the study the planner picked
-  const prevBlocks = opts.replaces?.payload.blocks ?? []
+  // "plan next week" works any day (on a Wednesday too): next Mon–Sun, else the card's week, else the rest of this one
+  const range = opts.range ?? weekAsked(words, data.today) ?? (opts.replaces?.payload.week ?? weekRange(data.today))
+  // the card being changed, if it's for the same week (a different week is a fresh plan)
+  const was = opts.replaces?.payload.week?.from === range.from ? opts.replaces?.payload.yourWeek ?? null : null
+  const prevBlocks = was ? opts.replaces?.payload.blocks ?? [] : []
   const said = was ? parsePins(words, prevBlocks.map((b, i) => ({ key: b.key ?? `b${i}`, title: b.title, date: b.date!, type: '' })).filter((b) => b.key.includes('#')), range.from, range.to, activePlaces(data.planning)) : new Map<string, Pin>()
   const upper = upperWords(words)
   const pins = opts.pins ?? new Map([...Object.entries(was?.training.pins ?? {}), ...said])
-  const trainingOnly = !!was && (said.size > 0 || upper != null)
+  // a change to the card re-fits it in code: the study the planner picked is kept (moved or left out as he says);
+  // the planner AI only runs for a fresh plan ("re-plan the week", a new week, no card)
+  const refit = !!was && !FRESH.test(words)
+  const edit = refit ? editStudy(was!.studyItems, words, range) : null
   const review = was?.review ?? await weekReview(sb, data, range.from)
   const recs = was?.recs ?? await recommendations(sb, data, range).then((r) => r.slice(0, 2).map((x) => x.short)).catch(() => [])
   const built = await buildYourWeek(sb, data, ctx, words, {
-    range, pins, upperCount: upper ?? was?.training.upperCount ?? null, left: was?.training.left ?? [], studyItems: trainingOnly ? was!.studyItems : null,
-    previous: opts.replaces?.payload.summary ?? null, review, recs, onUsage: (model, usage) => recordUsage(sb, 'plan', model, usage),
+    range, pins, upperCount: upper ?? was?.training.upperCount ?? null, left: was?.training.left ?? [], studyItems: edit ? edit.items : null,
+    previous: was ? opts.replaces?.payload.summary ?? null : null, review, recs, onUsage: (model, usage) => recordUsage(sb, 'plan', model, usage),
   })
   if ('message' in built) { await say(sb, chatId, esc(built.message), undefined, { intent: 'plan' }); return null }
-  return sendYourWeek(sb, chatId, built.payload, words || 'your week', data.today, { replaces: opts.replaces ?? null, onReplace: opts.onReplace, head: opts.head })
+  if (edit && !edit.said.length && !said.size && upper == null) built.payload.note = [built.payload.note, 'Re-fitted with the same study picks (say “re-plan the week” for new ones).'].filter(Boolean).join(' ')
+  const head = opts.head ?? (edit?.said.length ? `✏️ <b>Changed</b>: ${esc(edit.said.join('; '))}\n` : undefined)
+  return sendYourWeek(sb, chatId, built.payload, words || 'your week', data.today, { replaces: opts.replaces ?? null, onReplace: opts.onReplace, head })
+}
+
+/** Words that ask for a fresh plan (the planner AI picks again) rather than a change to the card. */
+const FRESH = /\b(?:re-?plan|plan (?:my|the|this|next) week|plan (?:it |everything )?(?:again|from scratch)|start (?:over|again)|from scratch|(?:new|fresh|different) (?:plan|picks)|pick again)\b/i
+
+/** "plan next week" / "next week's plan" (any day of the week): next Mon–Sun. null: not asked. */
+export function weekAsked(words: string, today: string): { from: string; to: string } | null {
+  if (!/\b(?:plan|re-?plan|planning|sort|organi[sz]e)\b[^.?!\n]{0,25}\bnext week\b|\bnext week['’]?s plan\b/i.test(words)) return null
+  const mon = addDays(weekStartISO(today), 7)
+  return { from: mon, to: addDays(mon, 6) }
+}
+
+const DOWS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+const DAY_RE = /\b(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?\b/gi
+const STOP = new Set(['the', 'my', 'on', 'to', 'move', 'put', 'nothing', 'skip', 'drop', 'free', 'off', 'not', 'study', 'plan', 'please', 'day', 'keep', 'instead',
+  'from', 'and', 'for', 'any', 'all', 'it', 'this', 'that', 'week', 'with', 'at', 'of', 'do', 'dont', 'can', 'you', 'there', 'want', 'have', 'only', 'leave', 'make', 'into'])
+
+/**
+ * Small study changes by code, on the planner's picks (no AI): "nothing on Friday" / "keep Fri free" (that day's study
+ * goes), "no physics on Thu" (just that), "physics homework to Sat" (moved there). `said`: what changed, in words.
+ */
+export function editStudy(items: YourWeek['studyItems'], words: string, range: { from: string; to: string }): { items: YourWeek['studyItems']; said: string[] } {
+  const out = items.map((d) => ({ date: d.date, items: [...d.items] }))
+  const said: string[] = []
+  const dateOf = (w: string) => { const i = DOWS.indexOf(w.slice(0, 3).toLowerCase()); for (let d = range.from; d <= range.to; d = addDays(d, 1)) if (isoDow(d) === i + 1) return d; return null }
+  for (const part of words.split(/[.;,\n]|\band\b|\bbut\b/i)) {
+    const days = [...part.matchAll(DAY_RE)].map((m) => ({ date: dateOf(m[1]), at: m.index! })).filter((x): x is { date: string; at: number } => !!x.date)
+    if (!days.length) continue
+    const about = normTitle(part.replace(DAY_RE, ' ')).split(' ').filter((x) => x.length >= 3 && !STOP.has(x))
+    const hits = (it: PlanItem) => it.kind !== 'rest' && it.kind !== 'training' && (!about.length || about.some((a) => normTitle(it.title).split(' ').includes(a) || normTitle(it.subject ?? '') === a))
+    if (/\b(?:no|nothing|skip|drop|free|off|not|don['’]?t)\b/i.test(part)) {
+      for (const { date } of days) {
+        const d = out.find((x) => x.date === date)
+        const gone = d?.items.filter(hits) ?? []
+        if (!d || !gone.length) continue
+        d.items = d.items.filter((it) => !gone.includes(it))
+        said.push(`${about.length ? gone.map((it) => it.title).join(', ') : 'study'} off ${dowShort(date)}`)
+      }
+    } else if (about.length && /\b(?:move|put|to|on)\b/i.test(part)) {
+      // the day after "to"/"on" (else the last day named) is where it goes
+      const m = part.match(/\b(?:to|on)\s+(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)/i)
+      const to = (m ? dateOf(m[1]) : null) ?? days.at(-1)!.date
+      const target = out.find((x) => x.date === to)
+      if (!target) continue
+      for (const d of out) {
+        if (d.date === to) continue
+        const moving = d.items.filter(hits)
+        if (!moving.length) continue
+        d.items = d.items.filter((it) => !moving.includes(it))
+        target.items.push(...moving)
+        said.push(`${moving.map((it) => it.title).join(', ')} → ${dowShort(to)}`)
+      }
+    }
+  }
+  return { items: out, said }
 }
 
 async function sendYourWeek(sb: SupabaseClient, chatId: number, payload: PlanPayload, words: string, today: string, opts: { replaces?: Card | null; onReplace?: () => Promise<void>; head?: string } = {}): Promise<string> {
