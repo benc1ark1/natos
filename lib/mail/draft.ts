@@ -10,6 +10,7 @@ import { addDays, dowShort, shortDate, todayISO, zonedToUTC, dateISOOf } from '.
 import { esc } from '../telegram/api'
 import { say } from '../telegram/turns'
 import { gmailLink, ruleWords, type Account, type MailRule } from './rules'
+import { LOOK_DAYS, loadWorthALook, lookWhy } from './look'
 
 const DRAFT_SYSTEM = `You draft a short email reply for Nat to send himself. You only see the email's sender, subject and Gmail's preview line, not the whole email.
 - Write as Nat, in British English: polite, friendly and brief (2 to 5 sentences), suited to who it's from (a teacher or tutor: respectful; a friend: casual).
@@ -74,11 +75,12 @@ const ago = (iso: string | null) => {
 /** /mail: each account's watcher, today's emails, his rules, cost per day. */
 export async function mailText(sb: SupabaseClient): Promise<string> {
   const start = zonedToUTC(todayISO(), '00:00')
-  const [{ data: accs }, { data: todays }, { data: rules }, cost] = await Promise.all([
+  const [{ data: accs }, { data: todays }, { data: rules }, cost, look] = await Promise.all([
     sb.from('mail_accounts').select('account,address,via,last_seen_at'),
     sb.from('emails').select('kind,flagged,status').gte('received_at', start),
     sb.from('mail_rules').select('pattern,action,label').is('archived_at', null).order('created_at'),
     mailCostByDay(sb),
+    loadWorthALook(sb, new Date(), 10).catch(() => null),
   ])
   const lines = ['📧 <b>Email watcher</b> <i>(reads only: never sends, deletes or marks)</i>']
   for (const a of ['school', 'personal'] as Account[]) {
@@ -89,6 +91,11 @@ export async function mailText(sb: SupabaseClient): Promise<string> {
   const t = todays ?? []
   const n = (k: string) => t.filter((x) => x.kind === k).length
   lines.push('', `Today: ${t.length} email${t.length === 1 ? '' : 's'} · ${n('homework')} homework · ${n('event')} event${n('event') === 1 ? '' : 's'} · ${n('reply')} to reply · ${n('ignore')} ignored${t.some((x) => x.status === 'new' || x.status === 'sorting') ? ' · some still being sorted' : ''}`)
+  // fix round 22: only CC'd, or between other people: never a card or an alert, just listed here (and on the Inbox page)
+  const addr = (a: Account) => ((accs ?? []).find((x) => x.account === a)?.address as string | null) ?? null
+  lines.push('', `👀 <b>Emails worth a look</b> <i>(only CC’d, or between other people: no alerts)</i>`, ...(look === null ? ['<i>Couldn’t load them.</i>'] : look.length
+    ? look.map((e) => `• <a href="${gmailLink(addr(e.account), e.thread_id)}">${esc(e.from_name ?? e.from_email ?? 'Email')}: ${esc(e.subject ?? '(no subject)')}</a> <i>(${dowShort(dateISOOf(e.received_at))} ${shortDate(dateISOOf(e.received_at))} · ${lookWhy(e.look)})</i>`)
+    : [`None in the last ${LOOK_DAYS} days.`]))
   lines.push('', '<b>Your rules</b>', ...((rules ?? []).length ? (rules as MailRule[]).map((r) => `• ${esc(ruleWords(r))}`) : ['None yet.']))
   lines.push('', '<b>Cost per day</b> (AI)', ...cost.map((d) => `${dowShort(d.date)} ${shortDate(d.date)}: ${usd(d.cost)}${d.calls ? ` (${d.calls})` : ''}`))
   lines.push('', '<i>“Always flag emails from @ucs.org.uk”, “ignore the Hudl newsletter”, “stop flagging @ucs.org.uk”.</i>')

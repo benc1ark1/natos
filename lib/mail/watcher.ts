@@ -25,6 +25,7 @@ import { activeSources } from '../lists'
 import { offerSlot } from '../telegram/dayplan'
 import { loadViewData } from '../telegram/views'
 import { findDeadline, type Deadline } from './deadline'
+import { expireTutorHomework } from './expire'
 import { HOMEWORK_WORDS, homeworkNotes, homeworkSender, homeworkSenders, homeworkTitle, schoolDomain, type HomeworkSender } from './homework'
 import { decidingRule, gmailLink, isAutomated, ruleWords, type Account, type MailKind, type MailRule } from './rules'
 import { missingColumn } from './store'
@@ -128,6 +129,14 @@ export async function classify(sb: SupabaseClient, list: (EmailRow & { setsHomew
   return new Map((out.emails ?? []).filter((x) => x && Number.isInteger(x.n)).map((x) => [x.n, x]))
 }
 
+/** "Emails worth a look" (fix round 22): he's only CC'd ('cc') or it's between other people ('others'), from how it was
+ *  addressed when it arrived (lib/mail/store.ts) or once sorted. Kept in the row's details: no new column. */
+export const lookOf = (e: Pick<EmailRow, 'details'>): 'cc' | 'others' | null => {
+  const d = (e.details ?? {}) as { addressed?: string; look?: string }
+  const v = d.look ?? d.addressed
+  return v === 'cc' || v === 'others' ? v : null
+}
+
 /** Sort what's waiting. Never throws for one bad batch: those emails are tried again next run (3 tries). */
 export async function sortPending(sb: SupabaseClient, today = todayISO()): Promise<{ sorted: number; ai: number; waiting: number }> {
   const stale = new Date(Date.now() - 10 * 60_000).toISOString()
@@ -162,6 +171,10 @@ export async function sortPending(sb: SupabaseClient, today = todayISO()): Promi
     const hw = homeworkSender(e, hwFrom)
     // a sender he named always gets through; school no-reply robots and newsletters are still robots
     if (!e.flagged && hw !== 'listed' && isAutomated(e)) { await save(e, { status: 'sorted', kind: 'ignore', why: 'automated (newsletter, promo or no-reply)' }); sorted++; continue }
+    // fix round 22: he's only CC'd, or it's between other people: no card and no alert (not even a flagged sender or a
+    // tutor), and no AI. It goes in "Emails worth a look" (the Inbox page and /mail)
+    const look = lookOf(e)
+    if (look) { await save(e, { status: 'sorted', kind: 'ignore', flagged: false, why: look === 'cc' ? 'worth a look: you’re only CC’d' : 'worth a look: between other people', details: { look } }); sorted++; continue }
     forAI.push({ ...e, hw, setsHomework: !!hw })
   }
   if (!forAI.length) return { sorted, ai: 0, waiting: 0 }
@@ -345,8 +358,10 @@ export async function notifyPending(sb: SupabaseClient, chatId: number, today = 
   return n
 }
 
-/** Everything the watcher does after mail arrives (the incoming route, after answering) and on each 5-minute tick. */
-export async function processMail(sb: SupabaseClient, chatId: number): Promise<{ sorted: number; notified: number }> {
+/** Everything the watcher does after mail arrives (the incoming route, after answering) and on each 5-minute tick;
+ *  also archives a tutor's homework once his next lesson has passed (lib/mail/expire.ts). */
+export async function processMail(sb: SupabaseClient, chatId: number, now = new Date()): Promise<{ sorted: number; notified: number }> {
+  await expireTutorHomework(sb, now).catch(() => [])   // a problem here never stops the email watcher
   const s = await sortPending(sb)
   const notified = await notifyPending(sb, chatId)
   return { sorted: s.sorted, notified }

@@ -133,7 +133,7 @@ export async function runTick(sb: SupabaseClient, chatId: number, nowDate = new 
 
   // The email watcher: sort what the Gmail scripts sent and announce it (a few per tick; lib/mail/watcher.ts). A watcher
   // that was working and has been quiet for 2 hours gets one warning a day.
-  try { if ((await processMail(sb, chatId)).notified) sent.push('mail') } catch {}
+  try { if ((await processMail(sb, chatId, nowDate)).notified) sent.push('mail') } catch {}
   const { data: watchers } = await sb.from('mail_accounts').select('account,last_seen_at')
   for (const w of (watchers ?? []) as { account: string; last_seen_at: string | null }[]) {
     if (!w.last_seen_at || nowDate.getTime() - Date.parse(w.last_seen_at) < 2 * 3_600_000) continue

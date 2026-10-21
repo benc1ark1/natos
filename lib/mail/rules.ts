@@ -11,6 +11,7 @@ export type MailRule = { id: string; pattern: string; action: 'flag' | 'ignore';
 export type Incoming = {
   id: string; thread: string | null; from: string; subject: string; snippet: string; received: string
   labels: string[]; automated: boolean; body?: string
+  to?: string; cc?: string   // the To and Cc headers (fix round 22; a script copied before then sends neither)
 }
 
 export const MAX_BODY = 4000
@@ -25,7 +26,7 @@ export const unescape = (s: string) =>
   })
 
 /** The script's list, checked: at most 50, each field cut to size, anything malformed dropped. */
-export function readIncoming(body: unknown): { account: Account; address: string | null; via: 'url' | 'calendar'; sent: string | null; messages: Incoming[] } | null {
+export function readIncoming(body: unknown): { account: Account; address: string | null; via: 'url' | 'calendar'; sent: string | null; messages: Incoming[]; aliases?: string[] } | null {
   if (!body || typeof body !== 'object') return null
   const b = body as Record<string, unknown>
   if (!ACCOUNTS.includes(b.account as Account)) return null
@@ -43,14 +44,41 @@ export function readIncoming(body: unknown): { account: Account; address: string
       labels: Array.isArray(x.labels) ? x.labels.filter((l): l is string => typeof l === 'string' && /^CATEGORY_[A-Z]+$/.test(l)).slice(0, 5) : [],
       automated: x.automated === true,
       ...(typeof x.body === 'string' && x.body.trim() ? { body: x.body.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim().slice(0, MAX_BODY) } : {}),
+      ...(typeof x.to === 'string' ? { to: str(x.to, 2000), cc: str(x.cc, 2000) } : {}),
     })
   }
   const address = str(b.address, 320)
   const sent = str(b.sent, 40)
+  const aliases = Array.isArray(b.aliases) ? b.aliases.map((a) => str(a, 320).toLowerCase()).filter((a) => /^[^\s@]+@[^\s@]+$/.test(a)).slice(0, 20) : []
   return {
     account: b.account as Account, address: /^[^\s@]+@[^\s@]+$/.test(address) ? address.toLowerCase() : null, via: b.via === 'calendar' ? 'calendar' : 'url',
     sent: sent && !Number.isNaN(Date.parse(sent)) && Date.parse(sent) <= Date.now() + 300_000 ? new Date(sent).toISOString() : null, messages,
+    ...(aliases.length ? { aliases } : {}),
   }
+}
+
+/** The addresses in a To or Cc header ("Sam <sam@x.com>, dad@y.com" → both), lower case. */
+export const addressesIn = (header: string | null | undefined) =>
+  (header ?? '').match(/[^\s<>,;:"'()]+@[^\s<>,;:"'()]+\.[a-z]{2,}/gi)?.map((a) => a.toLowerCase()) ?? []
+
+/** One address the way Gmail delivers it: "+tags" dropped; for Gmail, dots too, and googlemail = gmail. */
+const sameBox = (a: string) => {
+  const [u, h = ''] = a.toLowerCase().split('@')
+  const host = h === 'googlemail.com' ? 'gmail.com' : h
+  const user = u.replace(/\+.*$/, '')
+  return `${host === 'gmail.com' ? user.replace(/\./g, '') : user}@${host}`
+}
+
+/** Was the email written to him (fix round 22)? 'to': he's in To (or nobody is: "undisclosed recipients", sent to him
+ *  by Bcc); 'cc': he's only in Cc; 'others': it's between other people (he's in neither). null: the script sent no
+ *  To/Cc (a copy from before) or his address isn't known, so it's sorted as before. */
+export function addressedTo(m: Pick<Incoming, 'to' | 'cc'>, mine: (string | null | undefined)[]): 'to' | 'cc' | 'others' | null {
+  const me = new Set(mine.filter((a): a is string => !!a && a.includes('@')).map(sameBox))
+  if (m.to === undefined || !me.size) return null
+  const to = addressesIn(m.to).map(sameBox), cc = addressesIn(m.cc).map(sameBox)
+  if (!to.length && !cc.length) return 'to'
+  if (to.some((a) => me.has(a))) return 'to'
+  return cc.some((a) => me.has(a)) ? 'cc' : 'others'
 }
 
 /** "Sam Smith <sam@tutor.com>" → { name: 'Sam Smith', email: 'sam@tutor.com' } */

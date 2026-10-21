@@ -5,7 +5,8 @@
  * needs a reply, event, or ignore) and tells you on Telegram. Only an email that looks like homework (homework words
  * in its subject or preview, or from a sender Nat OS says sets homework: your tutors and your school) also goes with
  * its text (up to 4,000 characters), so the task gets the right deadline and what to do. Nat OS keeps that text only
- * if it is homework.
+ * if it is homework. Who it was sent to (To and Cc) goes too: an email you're only CC'd on, or that's between other
+ * people, never alerts you and is listed under "Emails worth a look" (the Inbox page and /mail).
  *  - Read-only: this project only has permission to READ Gmail (see appsscript.json), so it can't send, delete,
  *    archive or mark anything as read, even by mistake.
  *  - Never twice: it remembers what it has sent, and Nat OS ignores repeats anyway.
@@ -31,7 +32,8 @@ const MAX_PER_RUN = 40;       // a busy inbox is sent in parts (the rest next ru
 const HOUR = 60 * 60 * 1000;
 const MARK = 'natos-mail ';
 const MAIL_TAG = 'natosMail';
-const HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
+// To and Cc: an email you're only CC'd on, or that's between other people, goes in "Emails worth a look" (no alert)
+const HEADERS = ['From', 'To', 'Cc', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
 const MAX_BODY = 4000;
 // the same words Nat OS uses (lib/mail/homework.ts HOMEWORK_WORDS)
 const HOMEWORK_WORDS = /\b(home ?work|hw|due|deadline|assignment|worksheet|exercises?|problems?|questions?|coursework|essay|submit|hand ?in|past paper|revise|revision)\b/i;
@@ -66,7 +68,7 @@ function checkMail() {
     const since = Number(props.getProperty('since')) || now - FIRST_RUN_HOURS * HOUR;
     const sentIds = JSON.parse(props.getProperty('sentIds') || '[]');
     const found = newMessages(since, sentIds);
-    const way = deliver({ account: ACCOUNT, address: myAddress(props), sent: new Date(now).toISOString(), messages: found });
+    const way = deliver({ account: ACCOUNT, address: myAddress(props), aliases: myAliases(props), sent: new Date(now).toISOString(), messages: found });
     // only once Nat OS (or the fallback calendar) has them: remember them, and move the starting point on
     props.setProperty('sentIds', JSON.stringify(sentIds.concat(found.map((m) => m.id)).slice(-300)));
     const newest = found.reduce((a, m) => Math.max(a, Date.parse(m.received)), since);
@@ -101,6 +103,7 @@ function newMessages(since, sentIds) {
     const auto = (h['auto-submitted'] || 'no').toLowerCase();
     const one = {
       id: m.id, thread: m.threadId, from: (h['from'] || '').slice(0, 400), subject: (h['subject'] || '').slice(0, 300),
+      to: (h['to'] || '').slice(0, 1000), cc: (h['cc'] || '').slice(0, 1000),
       snippet: (m.snippet || '').slice(0, 300), received: new Date(Number(m.internalDate)).toISOString(),
       labels: (m.labelIds || []).filter((l) => l.indexOf('CATEGORY_') === 0),
       automated: !!(h['list-unsubscribe'] || h['list-id'] || ['bulk', 'list', 'junk'].indexOf(precedence) >= 0 || auto !== 'no'),
@@ -197,7 +200,7 @@ function toCalendar(payload) {
   const props = PropertiesService.getScriptProperties();
   for (const m of payload.messages) {
     const at = new Date(m.received);
-    const one = { account: payload.account, address: payload.address, sent: payload.sent, messages: [m] };
+    const one = { account: payload.account, address: payload.address, aliases: payload.aliases, sent: payload.sent, messages: [m] };
     const ev = cal.createEvent('📧 Email for Nat OS', at, at, { description: MARK + JSON.stringify(one) });
     ev.removeAllReminders();
     ev.setTag(MAIL_TAG, 'mail');
@@ -217,6 +220,20 @@ function toCalendar(payload) {
   }
   const old = new Date(now.getTime() - 48 * HOUR);
   cal.getEvents(new Date(now.getTime() - 30 * 24 * HOUR), old).forEach((e) => { if (e.getTag(MAIL_TAG) === 'mail') e.deleteEvent(); });
+}
+
+/** This account's other addresses (its "Send mail as" aliases), so an email to one of them counts as to you. Asked once a
+ *  day; read-only. If Gmail won't say, just the main address is used. */
+function myAliases(props) {
+  const day = new Date().toISOString().slice(0, 10);
+  if (props.getProperty('aliasesDay') === day) return JSON.parse(props.getProperty('aliases') || '[]');
+  let list = [];
+  try {
+    list = ((Gmail.Users.Settings.SendAs.list('me').sendAs) || []).map((s) => String(s.sendAsEmail || '').toLowerCase()).filter(Boolean).slice(0, 20);
+  } catch (e) { /* the main address is enough */ }
+  props.setProperty('aliases', JSON.stringify(list));
+  props.setProperty('aliasesDay', day);
+  return list;
 }
 
 /** This account's address (for "Open in Gmail" links), asked once. */

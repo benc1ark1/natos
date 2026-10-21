@@ -6,6 +6,7 @@ import { makeLookup } from '@/lib/lookup'
 import { todayISO } from '@/lib/time'
 import type { ContextFact, Resource, Task, TaskStatus } from '@/lib/types'
 import InboxSaved from './InboxSaved'
+import MailLook from './MailLook'
 import CaptureBox from './CaptureBox'
 import TaskForm from './TaskForm'
 import TaskRow from './TaskRow'
@@ -86,6 +87,9 @@ export default function InboxView() {
       )}
 
       {data && <InboxSaved facts={data.facts} resources={data.resources} reload={reload} toast={toast.show} />}
+
+      <MailLook />
+
 
       {editing && data && (
         <TaskForm task={editing} lookup={data.lookup} onClose={() => setEditing(null)}
