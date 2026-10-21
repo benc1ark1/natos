@@ -27,7 +27,7 @@ import { loadViewData } from '../telegram/views'
 import { findDeadline, type Deadline } from './deadline'
 import { expireTutorHomework } from './expire'
 import { HOMEWORK_WORDS, homeworkNotes, homeworkSender, homeworkSenders, homeworkTitle, schoolDomain, type HomeworkSender } from './homework'
-import { decidingRule, gmailLink, isAutomated, ruleWords, type Account, type MailKind, type MailRule } from './rules'
+import { decidingRule, gmailLink, isAutomated, robotSender, ruleWords, type Account, type MailKind, type MailRule } from './rules'
 import { missingColumn } from './store'
 export { ingest } from './store'
 
@@ -137,12 +137,25 @@ export const lookOf = (e: Pick<EmailRow, 'details'>): 'cc' | 'others' | null => 
   return v === 'cc' || v === 'others' ? v : null
 }
 
+/** Does it set work or give a deadline (homework words in its subject, preview or text, or a date to act by)? */
+export function needsHim(e: Pick<EmailRow, 'subject' | 'snippet' | 'received_at'> & { body?: string | null }): boolean {
+  const text = [e.snippet, e.body].filter(Boolean).join('\n')
+  return HOMEWORK_WORDS.test(`${e.subject ?? ''}\n${text}`) || !findDeadline({ subject: e.subject, body: text, sentAt: e.received_at }).guess
+}
+
 /** May an email he's only CC'd on (or between others) be filed away? Not when it's homework (homework words in its
  *  subject, preview or text, or one of his homework senders), has a deadline, or his rules flag it. */
 export function hideable(e: Pick<EmailRow, 'subject' | 'snippet' | 'received_at' | 'flagged'> & { body?: string | null }, hw: HomeworkSender): boolean {
   if (e.flagged || hw === 'listed') return false
-  const text = [e.snippet, e.body].filter(Boolean).join('\n')
-  return !HOMEWORK_WORDS.test(`${e.subject ?? ''}\n${text}`) && findDeadline({ subject: e.subject, body: text, sentAt: e.received_at }).guess
+  return !needsHim(e)
+}
+
+/** Fix round 22: mail through a Google Group or list (a teacher to year13@…) carries List-Id, so the script marks it
+ *  automated like a newsletter. It's for him when it's from his school or a homework sender, or sets work or a deadline:
+ *  then it's sorted as usual. A no-reply sender, a promotion and a newsletter (List-Unsubscribe) are still robots. */
+export function groupMailForHim(e: Pick<EmailRow, 'subject' | 'snippet' | 'received_at' | 'labels' | 'from_email' | 'details'> & { body?: string | null }, hw: HomeworkSender): boolean {
+  if (!(e.details as { list?: boolean } | null)?.list || robotSender(e)) return false
+  return !!hw || needsHim(e)
 }
 
 /** Sort what's waiting. Never throws for one bad batch: those emails are tried again next run (3 tries). */
@@ -178,7 +191,7 @@ export async function sortPending(sb: SupabaseClient, today = todayISO()): Promi
     e.flagged = rule?.action === 'flag'
     const hw = homeworkSender(e, hwFrom)
     // a sender he named always gets through; school no-reply robots and newsletters are still robots
-    if (!e.flagged && hw !== 'listed' && isAutomated(e)) { await save(e, { status: 'sorted', kind: 'ignore', why: 'automated (newsletter, promo or no-reply)' }); sorted++; continue }
+    if (!e.flagged && hw !== 'listed' && isAutomated(e) && !groupMailForHim(e, hw)) { await save(e, { status: 'sorted', kind: 'ignore', why: 'automated (newsletter, promo or no-reply)' }); sorted++; continue }
     // fix round 22: he's only CC'd, or it's clearly between other people: no card, no alert and no AI. It goes in
     // "Emails worth a look" (the Inbox page and /mail). Never homework, a deadline, his flagged or homework senders
     const look = hideable(e, hw) ? lookOf(e) : null

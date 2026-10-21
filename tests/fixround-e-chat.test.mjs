@@ -229,3 +229,51 @@ test('22: a script copied before this round (no To/Cc) is sorted as before', { s
   assert.deepEqual((await q(`select details from emails`))[0].details, {})
   chat.noSurprises()
 })
+
+// ---------------------------------------------------------------------------------------------------------------
+// 22 (round 2). A teacher's email to his year's Google Group is never filed as a newsletter
+// ---------------------------------------------------------------------------------------------------------------
+
+test('22: a teacher to year13@ (List-Id, so "automated") is sorted as usual: homework → a homework card, anything else → a normal card; newsletters and no-reply robots are still ignored', { skip }, async () => {
+  // NEXT week (half-term): Ms Hall sets physics to the Year 13 Google Group; Mr Lee moves assembly for SCHOOL week
+  const GROUP = { to: 'Year 13 <year13@ucs.org.uk>', cc: '', list: true, automated: true }
+  const r = await post({ account: 'school', address: 'babichn@ucs.org.uk', messages: [
+    // the new script: a Google Group's mail is group mail (not a newsletter)
+    mail('gg1', 'Ms Hall <hall@ucs.org.uk>', 'Physics homework', 'Simple harmonic motion: questions 1–8, by Friday please', { ...GROUP, newsletter: false, bulk: false, toCut: false, ccCut: false,
+      body: 'Hi all,\nRead 4.1–4.3 and answer questions 1–8 by Friday.\nMs Hall', received: sentAt(9) }),
+    // the script installed now (no newsletter/bulk flags): no homework words, still his school's
+    mail('gg2', 'Mr Lee <lee@ucs.org.uk>', 'Assembly moved', 'Assembly is in the sports hall this week.', { ...GROUP, received: sentAt(8) }),
+    // a newsletter with List-Unsubscribe (homework-ish words too): still ignored, no AI
+    mail('nl1', 'Study Tips <hello@studytips.example.com>', 'This week’s revision tips', 'Five ways to revise for mocks', { to: 'babichn@ucs.org.uk', cc: '', list: true, automated: true, newsletter: true, received: sentAt(7) }),
+    // the school's no-reply system through a list: a robot
+    mail('nr1', 'UCS <noreply@ucs.org.uk>', 'Homework due reminder', 'You have homework due', { ...GROUP, newsletter: false, bulk: false, received: sentAt(6) }),
+    // a plain robot (Auto-Submitted, no list)
+    mail('rb1', 'Server <alerts@ucs.org.uk>', 'Password expires', 'Change your password', { to: 'babichn@ucs.org.uk', cc: '', automated: true, bulk: true, received: sentAt(5) }),
+  ] })
+  assert.equal(r.status, 200)
+  const { processMail } = await import('../lib/mail/watcher.ts')
+  chat.ai.script(SORT, sortBy({ 'Physics homework': 'homework', 'Assembly moved': 'ignore' }))
+  const res = await processMail(await session(), OWNER_TG)
+  assert.equal(res.sorted, 5)
+  const rows = await q(`select message_id, kind, status, why, details, pending_id from emails order by message_id`)
+  const by = Object.fromEntries(rows.map((x) => [x.message_id, x]))
+  assert.equal(by.gg1.kind, 'homework', 'the teacher’s homework to year13@')
+  assert.notEqual(by.gg2.kind, 'ignore', 'his school’s email to the group comes through')
+  for (const id of ['gg1', 'gg2']) {
+    assert.doesNotMatch(by[id].why ?? '', /automated|worth a look/, id)
+    assert.ok(!by[id].details?.look, `${id}: not “worth a look”: it was to a group he’s in`)
+  }
+  for (const id of ['nl1', 'nr1', 'rb1']) assert.deepEqual([id, by[id].kind, by[id].why], [id, 'ignore', 'automated (newsletter, promo or no-reply)'])
+  // the AI only saw the two from his school
+  const calls = chat.ai.byModel(SORT).map((x) => JSON.stringify(x.body.messages)).join('\n')
+  assert.doesNotMatch(calls, /revision tips|Homework due reminder|Password expires/)
+  assert.equal(chat.ai.pending(), 0)
+  // Telegram: the physics homework (added from his school, with ↩️ Undo, or a card) and assembly as a card (✅ Save); nothing for the robots
+  const sent = chat.tg.sent()
+  const physics = sent.find((x) => /Physics homework|Added to your tasks/.test(x.text) && /Ms Hall/.test(x.text))
+  assert.ok(physics, 'a message for the physics homework')
+  const assembly = sent.find((x) => /Assembly moved/.test(x.text))
+  assert.ok(assembly, 'a card for the assembly email')
+  assert.match(JSON.stringify(assembly.reply_markup ?? {}), /Save|✅/, 'nothing saved until ✅')
+  assert.doesNotMatch(sent.map((x) => x.text).join('\n'), /revision tips|Homework due reminder|Password expires/)
+})

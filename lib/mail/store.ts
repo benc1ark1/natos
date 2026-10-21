@@ -3,7 +3,7 @@
 import 'server-only'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getUserId } from '../data'
-import { addressedTo, parseFrom, type Account, type Incoming } from './rules'
+import { addressedTo, listOnly, parseFrom, type Account, type Incoming } from './rules'
 
 /** "column … does not exist" (a SQL file not run yet), from Postgres or PostgREST. */
 export const missingColumn = (e: { code?: string; message?: string } | null | undefined) =>
@@ -41,7 +41,8 @@ export async function ingest(sb: SupabaseClient, input: { account: Account; addr
     return {
       user_id: userId, account: input.account, message_id: m.id, thread_id: m.thread, from_name: f.name?.slice(0, 200) ?? null, from_email: f.email?.slice(0, 320) ?? null,
       subject: m.subject || null, snippet: m.snippet || null, received_at: m.received, labels: m.labels, automated: m.automated, via: input.via,
-      ...(m.body ? { body: m.body } : {}), details: to === 'cc' || to === 'others' ? { addressed: to } : {},
+      // through a list or Google Group only (year13@…): noted, so the sorting can tell it from a newsletter
+      ...(m.body ? { body: m.body } : {}), details: { ...(to === 'cc' || to === 'others' ? { addressed: to } : {}), ...(listOnly(m) ? { list: true } : {}) },
     }
   })
   const save = (list: typeof rows) => sb.from('emails').upsert(list, { onConflict: 'user_id,account,message_id', ignoreDuplicates: true }).select('id')
