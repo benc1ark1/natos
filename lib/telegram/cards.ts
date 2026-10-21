@@ -18,7 +18,7 @@ import { applyPlan, offerSlot, planButtons, undoPlan, type PlanApplied, type Pla
 import { loadViewData } from './views'
 import { applyRipple, clashOptions, knockOn, loadWorld, rippleLines, undoRipple, type RippleApplied } from './ripple'
 import type { Ripple } from '../week'
-import { answerTap, clearButtons, editCard, esc, type Button } from './api'
+import { answerTap, clearButtons, editCard, esc, tg, type Button } from './api'
 import type { TgUpdate } from './guard'
 import { refreshPinned } from './pinned'
 import { dropIdea } from './ideas'
@@ -129,7 +129,7 @@ export const cardForAI = (c: Pending) =>
   c.kind === 'action'
     ? `A list of changes to saved records, not applied yet:\n${c.payload.summary ?? ''}\nHis words: “${c.text}”`
     : c.kind === 'plan'
-      ? `A day plan, not applied yet:\n${c.payload.summary ?? ''}\nHis words: “${c.text}”`
+      ? `${c.payload.week ? `A week plan (${c.payload.week.from} to ${c.payload.week.to})` : 'A day plan'}, not applied yet:\n${c.payload.summary ?? ''}\nHis words: “${c.text}”`
       : `${c.payload.summary ?? '(card)'}\nHis original words: “${c.text}”`
 
 /**
@@ -336,6 +336,13 @@ const TAP_RULES: Record<string, { kinds: Pending['kind'][]; from: Pending['statu
   q: { kinds: ['action'], from: ['open', 'editing'], to: 'open' }, // an answer to a quick-tap question on a change card
 }
 
+/** Answer a tap (the button stops spinning); true when Telegram says it is too old to answer (it arrived late). */
+export async function tapTooOld(id: string): Promise<boolean> {
+  try { await tg('answerCallbackQuery', { callback_query_id: id }); return false } catch (e) {
+    return /query is too old|query id is invalid/i.test(e instanceof Error ? e.message : '')
+  }
+}
+
 export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
   // a plug-in's own buttons ("trk:…", lib/telegram/plugins): it answers the tap itself
   const owned = pluginTap(q.data ?? '')
@@ -369,7 +376,16 @@ export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
   const { data: row } = await sb.from('telegram_pending').update({ status: rule.to })
     .eq('id', id).in('kind', rule.kinds).in('status', rule.from).select('*').maybeSingle()
   if (!row) { await answerTap(q.id, 'Already handled.'); if (messageId) await clearButtons(chatId, messageId); return }
-  await soon(() => answerTap(q.id!), { inOrder: false })   // the button stops spinning while the tap is handled
+  // A tap Telegram hands over late (it holds taps while the webhook can't be reached, then sends them all at once, so one
+  // can arrive long after it was made, next to an unrelated message like /app): Telegram refuses to answer it as "too
+  // old", and then nothing is applied or saved (fix round item 11: "Your week is set" at 18:19, with no ✅ just then).
+  if (/^[asi12f]$/.test(action)) {
+    if (await tapTooOld(q.id)) {
+      await sb.from('telegram_pending').update({ status: 'open' }).eq('id', id).eq('status', rule.to)
+      await say(sb, chatId, '⏱ A tap on that card reached me late (Telegram held it back), so nothing changed. Tap it again if you still want it.', undefined, { pending_id: id })
+      return
+    }
+  } else await soon(() => answerTap(q.id!), { inOrder: false })   // the button stops spinning while the tap is handled
   if (action === 'c') { await toggleCleanup(sb, chatId, row as never, arg, messageId); return }   // redrawn in place, buttons kept
   if (action === 'q') { await answerAsk(sb, chatId, row as Pending, arg, messageId); return }   // redrawn in place
   if (messageId) await soon(() => clearButtons(chatId, messageId), { inOrder: false })   // the old buttons go while the tap is handled
@@ -492,6 +508,11 @@ export async function onTap(sb: SupabaseClient, chatId: number, q: Tap) {
       const { refitAfterChange } = await import('./refit')
       await refitAfterChange(sb, chatId, card.payload.cleanup ? 'after the clean-up' : 'with that change').catch(() => null)
       if (card.payload.cleanup) { const { refreshOwenCard } = await import('./owen'); await refreshOwenCard(sb, chatId, 'after the clean-up').catch(() => null) }
+    } else if (actions.some((a) => a.op.startsWith('event_') || a.table === 'tasks')) {
+      // a calendar or task change sent while a Your week card waited (its own message, fix round item 10): that card
+      // re-fits around it (no AI call); a week already applied got its knock-on on this card
+      const { openWeekCard, refitAfterChange } = await import('./refit')
+      if (await openWeekCard(sb).catch(() => null)) await refitAfterChange(sb, chatId, 'with that change').catch(() => null)
     }
     // a session it added: what type of training is it? (asked once; lib/telegram/asktype.ts)
     const added = res.applied.filter((a) => a.op === 'event_new' || a.op === 'event_weekly').map((a) => a.id)

@@ -18,7 +18,7 @@ import { buildYourWeek, yourWeekButtons, yourWeekText } from './yourweek'
 type Card = { id: string; payload: PlanPayload & { card_message_id?: number | null }; created_at: string }
 
 /** The newest Your week card still waiting for ✅ (last 36 hours). */
-async function openWeekCard(sb: SupabaseClient): Promise<Card | null> {
+export async function openWeekCard(sb: SupabaseClient): Promise<Card | null> {
   const since = new Date(Date.now() - 36 * 3_600_000).toISOString()
   const { data } = await sb.from('telegram_pending').select('id,payload,created_at').eq('kind', 'plan').in('status', ['open', 'editing']).gte('created_at', since)
     .order('created_at', { ascending: false }).limit(5)

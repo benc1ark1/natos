@@ -22,6 +22,7 @@ import { SETTINGS, currentSettings, parseSetting, showSetting, moreSettings } fr
 import { cleanPattern, ruleWords, type MailRule } from '../mail/rules'
 import { DEFAULT_COSTS, levelWord, sessionOverride, typeCost, type CostRow } from '../load'
 import { gameChange, ignoreChange, owenChange, placeChange, sessionChange, upperWeekChange } from '../setup-edit'
+import { trainingPlaces } from '../setup'
 import { loadCosts } from '../training-data'
 
 export const C2_OPS = ['event_move', 'event_cancel', 'event_new', 'event_weekly', 'test_date', 'goal_topics', 'goal_archive', 'training_type', 'rule_set', 'rule_off', 'rule_on',
@@ -93,19 +94,57 @@ export function findSession(ev: EventRow, changes: EventException[], date: strin
 /** Check one proposed event/test/goal change. `grounded(words)`: are these his words? */
 const kvOf = (v: string) => Object.fromEntries((v ?? '').split(';').map((x) => x.split('=').map((y) => y.trim())).filter((x) => x.length === 2 && x[1]))
 
+/**
+ * A new event's name and its details, from what the AI sent: "name=Upper; place=PureGym Swiss Cottage; type=upper",
+ * "Upper; type=upper", or the details in brackets after the name ("Upper (PureGym Swiss Cottage; type=upper)"; a part
+ * without "=" there is the place). The name never keeps key=value bits. `inName`: the details were in the name.
+ */
+export function eventDetails(value: string): { name: string; kv: Record<string, string>; inName: boolean } {
+  const kv: Record<string, string> = {}
+  const put = (part: string, loose: 'name' | 'place') => {
+    const i = part.indexOf('=')
+    if (i > 0) { const k = part.slice(0, i).trim().toLowerCase(); if (!(k in kv) && part.slice(i + 1).trim()) kv[k] = part.slice(i + 1).trim() }
+    else if (part && !(loose in kv)) kv[loose] = part
+  }
+  let v = (value ?? '').trim()
+  // details in brackets at the end ("Dentist (Dr Patel)" with no details in it stays as it is)
+  const m = v.match(/^(.*?)\s*[([]([^()[\]]*)[)\]]\s*$/)
+  const inName = !!m && !!m[1].trim() && /[=;]/.test(m[2])
+  if (inName) v = m![1]
+  for (const part of v.split(';').map((x) => x.trim()).filter(Boolean)) put(part, 'name')
+  if (inName) for (const part of m![2].split(';').map((x) => x.trim()).filter(Boolean)) put(part, 'place')
+  const name = kv.name ?? kv.title ?? ''
+  return { name: name.replace(/\s+/g, ' ').trim().slice(0, 120), kv, inName }
+}
+
+/** A place's short name for an event title: "PureGym Swiss Cottage" → "PureGym" (the area in its address left out). */
+export function shortPlace(name: string, places: { name: string; address?: string | null }[]): string {
+  const p = places.find((x) => x.name.toLowerCase() === name.trim().toLowerCase())
+  const full = p?.name ?? name.trim()
+  const area = (p?.address ?? '').split(',')[0].trim()
+  return area && full.toLowerCase().endsWith(` ${area.toLowerCase()}`) ? full.slice(0, -area.length - 1).trim() : full
+}
+
 export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | undefined, rows: C2Rows, grounded: (w: string) => boolean, today: string):
   { action?: C2Action; problem?: string } {
   if (op === 'event_new') {
-    const title = (a.value ?? '').trim().slice(0, 120)
-    if (!title) return { problem: 'a new event needs a name' }
+    // "Upper (PureGym Swiss Cottage; type=upper)" or "name=Upper; place=…; type=upper" → "Upper · PureGym", the type
+    // as its training type (fix round 14: the details were left in the title)
+    const { name, kv } = eventDetails(a.value)
+    const title = (kv.place ? `${name} · ${shortPlace(kv.place, [...(rows.places ?? []), ...trainingPlaces(rows.planning)])}` : name).slice(0, 120)
+    if (!name) return { problem: 'a new event needs a name' }
     if (!isDate(a.date) || a.date < today || !grounded(a.words)) return { problem: `no clear day for “${title}” in your words` }
     if (!isTime(a.time)) return { problem: `no start time for “${title}”` }
     const end = isTime(a.time_to) && minutesOf(a.time_to) > minutesOf(a.time) ? a.time_to : hm(Math.min(minutesOf(a.time) + 60, 23 * 60 + 59))
     const travel = Number.isInteger(a.number) && a.number > 0 && a.number <= 180 ? a.number : 0
+    const types = trainingTypes(rows.planning)
+    const type = kv.type ? findItem(activeTypes(types), kv.type)?.key ?? null : null
+    const place = kv.place ? (rows.places ?? []).find((p) => p.name.toLowerCase() === kv.place.toLowerCase()) ?? null : null
     return { action: {
       op, table: 'events', id: null, title,
-      line: `📅 New: <b>${esc(title)}</b> ${day(a.date)} ${a.time}–${end}${travel ? ` (+${travel} min travel each way)` : ''}`,
-      patch: { title, starts_at: zonedToUTC(a.date, a.time), ends_at: zonedToUTC(a.date, end), is_busy: true, travel_minutes: travel },
+      line: `📅 New: <b>${esc(title)}</b> ${day(a.date)} ${a.time}–${end}${type ? ` · ${esc(labelOf(type, types))}` : ''}${travel ? ` (+${travel} min travel each way)` : ''}`,
+      patch: { title, starts_at: zonedToUTC(a.date, a.time), ends_at: zonedToUTC(a.date, end), is_busy: true, travel_minutes: travel,
+        ...(type ? { training_type: type, load: defaultLoad(type, types) } : {}), ...(place ? { place_id: place.id } : {}) },
     } }
   }
 
@@ -114,8 +153,9 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
     // value is its name, or "name=Club 360 Talent; place=Christchurch Finchley College; type=football; arrive=yes;
     // starts=20:15": arrive=yes = time is when he has to be there (the block starts then, so leave-by is right);
     // starts = when the session itself starts, if he said both (kept in the name, as there's no column for it)
-    const kv = /(^|;)\s*name\s*=/.test(a.value ?? '') ? kvOf(a.value) : { name: a.value ?? '' }
-    let title = (kv.name ?? '').trim().slice(0, 120)
+    // (details the AI left in the name, "Upper (PureGym Swiss Cottage; type=upper)", are read as details: fix round 14)
+    const { name, kv, inName } = eventDetails(a.value)
+    let title = (inName && kv.place ? `${name} · ${shortPlace(kv.place, [...(rows.places ?? []), ...trainingPlaces(rows.planning)])}` : name).slice(0, 120)
     if (!title) return { problem: 'a new event needs a name' }
     const days = weekdaysIn(a.words)
     if (!days.length || !grounded(a.words)) return { problem: `no clear days for “${title}” in your words` }
@@ -387,7 +427,9 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
     if ((ev as EventRow & { external_source?: string }).external_source === 'google') return { problem: `“${ev.title}” is on your Google calendar, so I can’t change it` }
     const kv = kvOf(a.value)
     if (kv.title !== undefined) {
-      const title = kv.title.slice(0, 120)
+      const d = eventDetails(a.value)   // a clean name, never "Upper (PureGym Swiss Cottage; type=upper)"
+      const title = (d.inName && d.kv.place ? `${d.kv.title ?? d.name} · ${shortPlace(d.kv.place, [...(rows.places ?? []), ...trainingPlaces(rows.planning)])}` : d.kv.title ?? d.name).slice(0, 120)
+      if (!title) return { problem: 'what should it be called?' }
       if (title === ev.title) return { problem: `it’s already called “${title}”` }
       return { action: { op, table: 'events', id: ev.id, title: ev.title, line: `📅 <b>${esc(ev.title)}</b> → <b>${esc(title)}</b> <i>(renamed)</i>`, patch: { title } } }
     }

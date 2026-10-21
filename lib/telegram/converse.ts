@@ -10,7 +10,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordUsage, budget } from '../ai/usage'
 import { loadPlannerContext, type PlannerContext } from '../ask/server'
 import type { AskAnswer } from '../ask/types'
-import { todayISO, weekStartISO } from '../time'
+import { addDays, todayISO, weekStartISO } from '../time'
 import { esc, type Button } from './api'
 import { botAsked, looksLikeChange, looksLikeMeta, looksLikePartialEdit, route, think, triage, type Decision } from './brain'
 import { checkActions, loadRows } from './actions'
@@ -202,10 +202,16 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   const ownMessage = card && card.status !== 'editing' && !looksLikePartialEdit(message) && (
     (card.kind === 'capture' && res.decision.intent === 'correction' && (looksDone(message) || unrelated(card.payload.proposal?.title ?? card.text)))
     || (card.kind === 'action' && ['correction', 'instruction'].includes(res.decision.intent) && unrelated(card.text)))
-  if (ownMessage) {
+  // A plan card waiting (Your week, a training plan, a day plan): only a change to the plan itself re-plans it. A change
+  // to saved records ("Owen moved to Wed 28 Oct 11:00", "physics homework is due Friday now"), a 'done' report, a plan
+  // for another week or a "correction" that isn't about the plan is its own message (fix round, item 10: before, every
+  // plan / correction / instruction went into the waiting week card). The week card re-fits after that change's ✅.
+  const ownPlan = !ownMessage && card?.kind === 'plan' && card.status !== 'editing' && !(card.payload as { add?: boolean }).add
+    && !editsPlan(message, res.decision, card, today)
+  if (ownMessage || (ownPlan && res.decision.intent === 'correction')) {
     const again = await ask(null)
     if (again.ok) { res = again; card = null }
-  }
+  } else if (ownPlan) card = null   // (its changes are about saved records already: no need to ask again)
 
   const d = res.decision
   // A change to a day plan that isn't applied yet: plan that day again with his words. (Not the small add-only cards:
@@ -341,6 +347,35 @@ const wordsOf = (s: string) => new Set(s.toLowerCase().replace(/[’']/g, '').sp
 /** A report that something is finished ("Sam's CS homework is done", "finished the physics sheet", "did my reading"). */
 export const looksDone = (message: string) =>
   /\b(is|are|'s|’s|was|were|all|now)\s+(done|finished|complete|completed|handed in|submitted|sent)\b|^(done|finished|completed|did|handed in|submitted)\b/i.test(message.trim())
+
+// Words that change a plan card itself: "no physics tonight", "start at 7", "lighter on Fri", "upper Sat at PureGym"
+const PLAN_EDIT = /^(?:no|not|without|less|more|fewer|lighter|heavier|start|finish|end|only|skip|swap|instead|keep|drop|add|put|move|make it|i only have|i've got|ive got)\b|\b(?:instead|lighter|heavier|earlier|later)\b/i
+
+/** "plan next week" while this week's card waits (or "this week" while next week's waits): another week's plan. */
+export function otherWeek(message: string, card: Pick<Pending, 'payload'>, today: string): boolean {
+  const from = (card.payload as { week?: { from?: string } }).week?.from
+  if (!from) return false
+  const next = addDays(weekStartISO(today), 7)
+  if (/\bnext week\b/i.test(message)) return weekStartISO(from) < next
+  if (/\bthis week\b/i.test(message)) return weekStartISO(from) >= next
+  return false
+}
+
+/**
+ * Does his message change the plan card waiting (re-plan it), or is it a message of its own? A plan request is a change
+ * (unless it's for another week); changes to saved records, 'done' reports and new items never are; a "correction" is
+ * only when it reads like a change to a plan or names a session on the card.
+ */
+export function editsPlan(message: string, d: Pick<Decision, 'intent' | 'actions' | 'asks'>, card: Pick<Pending, 'payload'>, today: string): boolean {
+  if (looksDone(message)) return false
+  if (d.intent === 'plan') return !otherWeek(message, card, today)
+  if (d.intent === 'instruction') return !d.actions.length && !d.asks.length
+  if (d.intent !== 'correction') return false
+  if (PLAN_EDIT.test(message.trim())) return true
+  const blocks = ((card.payload as { blocks?: { title: string; kind?: string }[] }).blocks ?? [])
+  const names = blocks.filter((b) => b.kind === 'training').map((b) => b.title.split(' @ ')[0]).join(' ')
+  return message.trim().split(/\s+/).length <= 6 && sharesWords(names, message)
+}
 
 /** Do two texts share a real word ("Chemistry notes" and "Chemistry notes due Friday, 30 min")? */
 export function sharesWords(a: string, b: string): boolean {

@@ -205,6 +205,23 @@ export function nullify(o: Record<string, unknown>): RawOutput {
   return out as RawOutput
 }
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+const WEEKDAYS = ['mon(?:day)?', 'tue(?:s|sday)?', 'wed(?:s|nesday)?', 'thu(?:r|rs|rsday)?', 'fri(?:day)?', 'sat(?:urday)?', 'sun(?:day)?']
+
+/** Do his words name this date ("Wed 28 Oct", "28th October", "Oct 28", "28/10", "2026-10-28"; a weekday alone, "Wed",
+ *  for the next 7 days)? So a date he gave is kept even when the AI words its date_words differently (fix round 13). */
+export function dateInWords(iso: string, text: string, today: string): boolean {
+  const t = text.toLowerCase()
+  if (t.includes(iso)) return true
+  const d = Number(iso.slice(8, 10)), m = Number(iso.slice(5, 7))
+  const day = `0?${d}(?:st|nd|rd|th)?`, mon = `${MONTHS[m - 1]}[a-z]*\\.?`
+  if (new RegExp(`\\b${day}\\s+(?:of\\s+)?${mon}(?![a-z])|\\b${mon}\\s+${day}\\b|\\b0?${d}/0?${m}\\b`).test(t)) return true
+  if (iso < today || iso > addDays(today, 7)) return false
+  const wd = WEEKDAYS[(new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7]
+  // a weekday alone, with no other date next to it ("Wed", "wednesday"; not "Wed 4 Nov")
+  return new RegExp(`\\b${wd}\\b(?!\\s+(?:the\\s+)?\\d{1,2}(?:st|nd|rd|th)?(?:\\s+(?:of\\s+)?[a-z]{3}|\\/))`).test(t)
+}
+
 export function checkProposal(raw: RawOutput, text: string, ctx: CaptureContext): Proposal {
   const notes: string[] = []
   const kind = pick<CaptureKind>(raw.kind, CAPTURE_KINDS, 'idea')
@@ -216,7 +233,8 @@ export function checkProposal(raw: RawOutput, text: string, ctx: CaptureContext)
   let dropped = false
   const date = (v: string | null, allowPast = false): string | null => {
     if (!v) return null
-    if (!isDate(v) || !grounded) { dropped = true; return null }
+    // (his own words naming that date count too: "Wed 28 Oct" when the AI's date_words say "Wednesday 28 October")
+    if (!isDate(v) || !(grounded || dateInWords(v, text, ctx.today))) { dropped = true; return null }
     if (!allowPast && v < ctx.today) { dropped = true; return null }
     return v
   }
@@ -268,7 +286,9 @@ export function checkProposal(raw: RawOutput, text: string, ctx: CaptureContext)
   let newStart = time(raw.new_start)
   let newEnd = time(raw.new_end)
   if (event) {
-    const next = expandEvents([event], ctx.today, addDays(ctx.today, 13), ctx.changes).find((o) => !o.cancelled)
+    // the session in the week of the day he gave ("Owen … Wed 28 Oct" changes that week's session), else the next one
+    const occ = expandEvents([event], ctx.today, addDays(ctx.today, 13), ctx.changes).filter((o) => !o.cancelled)
+    const next = (newDate ? occ.find((o) => weekStartISO(o.usualDate) === weekStartISO(newDate)) : null) ?? occ[0]
     onDate = next?.usualDate ?? null
     if (newStart && !newEnd && event.start_time && event.end_time) {
       const len = minutesOf(event.end_time) - minutesOf(event.start_time)
