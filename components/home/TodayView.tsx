@@ -8,7 +8,7 @@ import { CheckIcon, ErrorBox, Loading, type ShowToast } from '../ui'
 
 type Item = {
   key: string; at: string | null; end: string | null; title: string; open: string; url: string | null; minutes: number; why: string
-  kind: 'study' | 'task' | 'training'; isDone: boolean; blockIds: string[]; taskId: string | null; rolledFrom: string | null; shortened?: boolean
+  kind: 'study' | 'task' | 'training'; isDone: boolean; blockIds: string[]; taskId: string | null; rolledFrom: string | null; shortened?: boolean; fixed?: boolean; fixedAt?: string
 }
 type Hidden = { key: string; title: string; open: string; minutes: number; why: string }
 type Plan = { date: string; mode: 'half_term' | 'school'; items: Item[]; fixed: string; more: number; hidden: Hidden[]; noTime: boolean; note: string | null }
@@ -74,7 +74,7 @@ export default function TodayView({ toast, onChanged }: { toast: ShowToast; onCh
             <div className="empty">Nothing planned for today. Enjoy it, or capture something above and it’ll be planned in.</div>
           ) : (
             <ol className="tlist">
-              {plan.items.map((it) => {
+              {plan.items.map((it, i) => {
                 const t = target(it)
                 return (
                   <li key={it.key} className={`titem ${it.isDone ? 'done' : ''} ${busy === it.key ? 'pending' : ''}`}>
@@ -84,7 +84,8 @@ export default function TodayView({ toast, onChanged }: { toast: ShowToast; onCh
                     </button>
                     <div className="tbody">
                       <div className="ttop">
-                        <span className="ttime mono">{it.at ?? 'any time'}</span>
+                        {/* item 18: an ordered list with minutes; only a fixed training session (his set time) shows its clock time */}
+                        <span className="ttime mono">{i + 1}.{it.kind === 'training' && it.fixed && (it.fixedAt ?? it.at) ? ` ${it.fixedAt ?? it.at}` : ''}</span>
                         <span className="tkind">{KIND[it.kind]}</span>
                         <span className="tdur">{mins(it.minutes)}</span>
                       </div>

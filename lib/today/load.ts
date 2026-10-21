@@ -36,6 +36,7 @@ import { ACT_FILL, ACT_FILL_WHY, actFillDay, blockedWhy, dayRules, testDays, typ
 import { schoolDays } from '../school'
 import { buildToday, clampItems, heavyOf, todayFromSaved, type FixedIn, type Rolled, type SavedBlock, type TodayItem, type TodayPlan, type TrainingIn } from './build'
 import { isAuto, loadBlocks, saveToday } from './data'
+import { isFixedSession } from './fixed'
 import { dayMode, holidayChanges, isHoliday } from './holidays'
 
 export type TodayLoad = { plan: TodayPlan; data: ViewData; sqlMissing: boolean; world: StudyWorld; act: ActWorld }
@@ -47,12 +48,15 @@ const emptyAct = (today: string): ActWorld => ({ today, retake: null, goal: 36, 
 /** A day with no study on top of what's booked has at most this many minutes for the planner (a free half-term day). */
 const MAX_STUDY_MIN = 360
 
-/** Where he'll be and when to leave, for a training block: "leave school 16:10 (25 min)". */
-function trainingOpen(b: { start_time: string; title: string }, d: ViewData, schoolEnd: number | null): { open: string; leave: string | null } {
+/** Where he'll be and when to leave, for a training block: "leave school 16:10 (25 min)". Item 18: the leave-by line
+ *  only for a fixed session (his set time); `leave` is still given, so study keeps clear of the journey. */
+function trainingOpen(b: { start_time: string; title: string }, d: ViewData, schoolEnd: number | null, date: string): { open: string; leave: string | null; fixed: boolean } {
+  const fixed = isFixedSession(d.planning, date, b.title, b.start_time)
   const l = blockLeave({ start_time: b.start_time, title: b.title }, d.planning, schoolEnd, d.settings.bufferMin)
-  if (!l) return { open: '', leave: null }
+  if (!l) return { open: '', leave: null, fixed }
+  if (!fixed) return { open: '', leave: l.leave, fixed }
   const fromSchool = l.how.includes('from school')
-  return { open: `leave ${fromSchool ? 'school ' : ''}${l.leave} (${l.how.replace(/ from school/, '')})`, leave: l.leave }
+  return { open: `leave ${fromSchool ? 'school ' : ''}${l.leave} (${l.how.replace(/ from school/, '')})`, leave: l.leave, fixed }
 }
 
 const openTask = (t: Task) => !(t.status === 'completed' || t.archived_at || t.status === 'someday' || t.is_system)
@@ -198,7 +202,8 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
     try { return planStudyDay(world, day, extra).picks.filter((p) => p.kind !== 'training' && pickOk(p)) } catch { return [...extra].filter((p) => p.kind !== 'training' && pickOk(p)).sort((a, b) => a.tier - b.tier) }
   }
   const doneOf = (it: TodayItem) => effectDone(it, { date, tasks: data.tasks, world, act })
-  const trainOpen = (b: SavedBlock) => trainingOpen(b, data, schoolEnd).open
+  const trainOpen = (b: SavedBlock) => trainingOpen(b, data, schoolEnd, date).open
+  const trainFixed = (b: SavedBlock) => isFixedSession(planning, date, b.title, b.start_time)
 
   const nowHM = date === today ? timeOf(now) : null
   // a list saved earlier today, or his own plan: shown as it is. A plan he applied after the list was saved replaces
@@ -212,7 +217,7 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
     const autoLive = auto.length > 0 && (auto.some((b) => b.status === 'planned') || !his.length)
     const picks = [...planner(MAX_STUDY_MIN), ...taskPicks(data.tasks, date, act.subjectId).filter(pickOk)]
     const list = autoLive ? [...auto, ...training] : [...his, ...auto.filter((b) => b.status === 'done'), ...training]
-    const plan = todayFromSaved({ date, mode, blocks: list, picks, fixed, max, source: autoLive ? 'auto' : 'his', trainingOpen: trainOpen, effectDone: doneOf, now: nowHM })
+    const plan = todayFromSaved({ date, mode, blocks: list, picks, fixed, max, source: autoLive ? 'auto' : 'his', trainingOpen: trainOpen, trainingFixed: trainFixed, effectDone: doneOf, now: nowHM })
     return { plan: withNote(plan), data, sqlMissing: blocks.sqlMissing, world, act }
   }
 
@@ -236,8 +241,8 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
 
   // training: his applied week's blocks, else where the week optimiser puts today's sessions
   let trainingIn: TrainingIn[] = training.map((b) => {
-    const t = trainingOpen(b, data, schoolEnd)
-    return { title: b.title, start: b.start_time, end: b.end_time, blockIds: [b.id], targetId: b.target_id, open: t.open, done: b.status === 'done', cutFrom: t.leave ?? undefined, cutTo: t.leave ? hm(minutesOf(b.end_time) + minutesOf(b.start_time) - minutesOf(t.leave)) : undefined }
+    const t = trainingOpen(b, data, schoolEnd, date)
+    return { title: b.title, start: b.start_time, end: b.end_time, blockIds: [b.id], targetId: b.target_id, open: t.open, done: b.status === 'done', fixed: t.fixed, cutFrom: t.leave ?? undefined, cutTo: t.leave ? hm(minutesOf(b.end_time) + minutesOf(b.start_time) - minutesOf(t.leave)) : undefined }
   })
   let newTraining: TrainingIn[] = []
   // (only when the list is being saved: the morning message, the first look at Today; a preview doesn't run it)
@@ -250,8 +255,10 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
       const placed = planTraining({ ...w, changes: holidayChanges(w.events, w.changes, planning, w.from, w.to) }).placed.filter((p) => p.date === date && (date !== today || minutesOf(p.start) >= nowMin))
       newTraining = placed.map((p) => {
         const b = blockOf(p)
-        const leave = b.leave ? `leave ${b.from === 'school' ? 'school ' : ''}${b.leave}` : ''
-        return { title: b.title, start: b.start, end: b.end, blockIds: [], targetId: p.targetId ?? null, open: [leave, p.intensity !== 'heavy' ? p.intensity : ''].filter(Boolean).join(' · '), done: false,
+        // item 18: a leave-by line only for a fixed session (his set time), not a time the planner chose
+        const fixed = isFixedSession(planning, date, b.title, b.start)
+        const leave = b.leave && fixed ? `leave ${b.from === 'school' ? 'school ' : ''}${b.leave}` : ''
+        return { title: b.title, start: b.start, end: b.end, blockIds: [], targetId: p.targetId ?? null, open: [leave, p.intensity !== 'heavy' ? p.intensity : ''].filter(Boolean).join(' · '), done: false, fixed,
           cutFrom: hm(minutesOf(b.start) - (p.before ?? 0)), cutTo: hm(minutesOf(b.end) + (p.after ?? 0)) }
       })
       trainingIn = newTraining
@@ -289,7 +296,7 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
       if (!again.rows.some((b) => isAuto(b, date))) { await new Promise((ok) => setTimeout(ok, 400)); again = await loadBlocks(sb, date) }
       const auto2 = again.rows.filter((b) => isAuto(b, date))
       if (auto2.length) {
-        const plan2 = todayFromSaved({ date, mode, blocks: [...auto2, ...again.rows.filter((b) => b.kind === 'training' && !isAuto(b, date))], picks: [...picks, ...tasks], fixed, max, source: 'auto', trainingOpen: trainOpen, effectDone: doneOf, now: nowHM })
+        const plan2 = todayFromSaved({ date, mode, blocks: [...auto2, ...again.rows.filter((b) => b.kind === 'training' && !isAuto(b, date))], picks: [...picks, ...tasks], fixed, max, source: 'auto', trainingOpen: trainOpen, trainingFixed: trainFixed, effectDone: doneOf, now: nowHM })
         return { plan: withNote(plan2), data, sqlMissing, world, act }
       }
     } else plan.source = 'auto'

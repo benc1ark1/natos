@@ -18,6 +18,7 @@ import { esc } from './api'
 import { loadDay, type DayData } from './brief'
 import { boundsOf } from '../setup'
 import { schoolDays, withSchool } from '../school'
+import { isFixedSession } from '../today/fixed'
 import type { Ref } from './turns'
 
 export const VIEWS = ['inbox', 'week', 'coming', 'free', 'postponed', 'project', 'today', 'load', 'gaps', 'savings', 'maths', 'mathsnext'] as const
@@ -80,7 +81,10 @@ export function matchView(message: string, today: string): ViewRequest | null {
 // The data (one read for every view)
 // ---------------------------------------------------------------------------
 
-export type ViewData = DayData & { reminders: Reminder[]; goals: Goal[]; projects: Project[]; settings: PlanningSettings; now: Date; travel?: TravelWorld | null }
+export type ViewData = DayData & { reminders: Reminder[]; goals: Goal[]; projects: Project[]; settings: PlanningSettings; now: Date; travel?: TravelWorld | null
+  weekBlocks?: WeekBlock[] }
+/** A planned study or training block in the next 7 days (item 19: /week shows the plan, not only bookings). */
+export type WeekBlock = { id: string; on_date: string; start_time: string; end_time: string; title: string; kind: string; status: string }
 
 /** The planning settings (and the raw value, which also holds the travel settings). */
 export async function loadPlanningRaw(sb: SupabaseClient): Promise<unknown> {
@@ -90,15 +94,17 @@ export async function loadPlanningRaw(sb: SupabaseClient): Promise<unknown> {
 export const loadPlanning = async (sb: SupabaseClient): Promise<PlanningSettings> => planningSettings(await loadPlanningRaw(sb))   // before jarvis-b.sql runs: the defaults
 
 export async function loadViewData(sb: SupabaseClient, today: string, now = new Date()): Promise<ViewData> {
-  const [day, reminders, goals, projects, raw] = await Promise.all([
+  const [day, reminders, goals, projects, raw, weekBlocks] = await Promise.all([
     loadDay(sb, today),
     loadReminders(sb),
     sb.from('goals').select('*').is('archived_at', null).or(`target_date.is.null,target_date.gte.${today}`).order('target_date'),
     sb.from('projects').select('*').is('archived_at', null).order('sort_order'),
     loadPlanningRaw(sb),
+    sb.from('plan_blocks').select('id,on_date,start_time,end_time,title,kind,status').gte('on_date', today).lte('on_date', addDays(today, 6)).in('status', ['planned', 'done']).order('start_time')
+      .then((r) => (r.error ? [] : (r.data ?? []) as WeekBlock[]).map((b) => ({ ...b, start_time: b.start_time.slice(0, 5), end_time: b.end_time.slice(0, 5) }))),
   ])
   const travel = await loadTravel(sb, day.events, raw)
-  return { ...day, planning: raw, reminders, goals: rows<Goal>(goals, 'goals'), projects: rows<Project>(projects, 'projects'), settings: withBounds(planningSettings(raw), day.shapes), now, travel }
+  return { ...day, planning: raw, reminders, goals: rows<Goal>(goals, 'goals'), projects: rows<Project>(projects, 'projects'), settings: withBounds(planningSettings(raw), day.shapes), now, travel, weekBlocks }
 }
 
 /** Planning settings that keep each day's routines and sleep free (wake + morning routine … night routine before bed). */
@@ -115,6 +121,13 @@ const when = (iso: string, today: string) => (iso === today ? 'today' : iso === 
 const taskLine = (t: Task, today: string) => {
   const bits = [deadlineLabel(t, today), t.duration_minutes ? `~${t.duration_minutes} min` : '', t.postpone_count >= 2 ? `postponed ${t.postpone_count}×` : ''].filter(Boolean)
   return `• ${t.is_key ? '⭐ ' : ''}${t.importance === 'must' && deadlineOf(t) ? `<b>${esc(t.title)}</b>` : esc(t.title)}${bits.length ? ` <i>(${esc(bits.join(' · '))})</i>` : ''}`
+}
+const mins = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`)
+/** A planned block: training at its time (he has to be there); study and tasks with their minutes, in order (item 18).
+ *  `fixed` (Today): is this training at his set time? A session the planner placed shows its minutes, like study. */
+const blockLine = (b: { start_time: string; end_time: string; title: string; kind: string; status?: string }, fixed: (b: { start_time: string; title: string }) => boolean = () => true) => {
+  const m = ` <i>· ${mins(minutesOf(b.end_time) - minutesOf(b.start_time))}</i>`
+  return `${b.status === 'done' ? '✅ ' : ''}${b.kind === 'training' ? (fixed(b) ? `🏋️ ${b.start_time}–${b.end_time} ${esc(b.title)}` : `🏋️ ${esc(b.title)}${m}`) : `📚 ${esc(b.title)}${m}`}`
 }
 const refsOf = (ts: Task[]): Ref[] => ts.map((t) => ({ kind: 'task', id: t.id, title: t.title }))
 const live = (d: ViewData) => d.tasks.filter((t) => t.status !== 'completed' && !t.archived_at)
@@ -144,8 +157,10 @@ export function renderWeek(d: ViewData): Rendered {
   const lines = [`🗓 <b>Your week</b> (${day(d.today)} – ${day(end)})`]
   const refs: Ref[] = []
   for (let x = d.today; x <= end; x = addDays(x, 1)) {
-    const evs = withSchool(school.get(x), occ.filter((o) => o.date === x && !isBackground(o.event) && !hidden.has(o.key))
-      .map((o) => ({ at: o.start ?? '', line: `${timeRange(o) || 'all day'} ${esc(o.event.title)}${o.moved ? ' <i>(moved)</i>' : ''}` })))
+    // bookings, and the week's planned study and training blocks among them in time order (item 19)
+    const evs = withSchool(school.get(x), [...occ.filter((o) => o.date === x && !isBackground(o.event) && !hidden.has(o.key))
+      .map((o) => ({ at: o.start ?? '', line: `${timeRange(o) || 'all day'} ${esc(o.event.title)}${o.moved ? ' <i>(moved)</i>' : ''}` })),
+      ...(d.weekBlocks ?? []).filter((b) => b.on_date === x && b.kind !== 'rest').map((b) => ({ at: b.start_time, line: blockLine(b) }))])
     const due = dated.filter((t) => deadlineOf(t) === x)
     const overdue = x === d.today ? dated.filter((t) => deadlineOf(t)! < d.today) : []
     const tst = tests.filter((g) => g.target_date === x)
@@ -249,14 +264,16 @@ export function renderToday(d: ViewData): Rendered {
   const [f] = freeDays(d.events, d.changes, d.today, d.today, d.settings, d.today, minutesOf(now), d.travel)
   const lines = [`📍 <b>Today</b> (${now})`]
   const plan = (d.plan ?? []).filter((b) => b.end_time > now)
+  // item 18: only a fixed session (his set time) keeps its clock time
+  const fixed = (b: { start_time: string; title: string }) => isFixedSession(d.planning, d.today, b.title, b.start_time)
   // school as one line, with what's left of its free periods, break and lunch (and anything planned in them)
   const booked = withSchool(inSchool, [
     ...left.map((o) => ({ at: o.start ?? '', line: `${esc(timeRange(o) || 'all day')} ${esc(o.event.title)}` })),
-    ...(inSchool ? plan.filter((b) => b.start_time < inSchool.end).map((b) => ({ at: b.start_time, line: `${b.start_time}–${b.end_time} ${esc(b.title)}` })) : []),
+    ...(inSchool ? plan.filter((b) => b.start_time < inSchool.end).map((b) => ({ at: b.start_time, line: blockLine(b, fixed) })) : []),
   ], '  ', inSchool?.windows.filter((w) => w.end > now)).map((l) => (l.startsWith(' ') ? l : `• ${l}`))
   const later = inSchool ? plan.filter((b) => b.start_time >= inSchool.end) : plan
   lines.push(booked.length ? booked.join('\n') : occ.length ? '• Nothing else booked' : '• Nothing booked')
-  if (later.length) lines.push('', '🗓 <b>Plan</b>', ...later.map((b) => `• ${b.start_time}–${b.end_time} ${esc(b.title)}`))
+  if (later.length) lines.push('', '🗓 <b>Plan</b>', ...later.map((b, i) => `${i + 1}. ${blockLine(b, fixed)}`))
   if (todo.length) lines.push('', '✅ <b>To do</b>', ...todo.map((t) => taskLine(t, d.today)))
   const [free, night] = slotsText(f, d.settings).split(' · school night: ')
   lines.push('', `🕒 <b>Free</b>: ${esc(free)}`)
