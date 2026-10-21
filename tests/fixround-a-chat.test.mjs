@@ -7,7 +7,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { useChat, CHAT } from './support/chat.mjs'
 import { brain } from './support/fakes.mjs'
-import { PLANNING, THIS, TODAY, day } from './support/nat-real.mjs'
+import { PLANNING, THIS, TODAY, ACT_DAY, day } from './support/nat-real.mjs'
 
 const chat = useChat()
 const skip = chat.skip
@@ -70,4 +70,38 @@ test('item 12 · moving Owen onto his typed “Owen” Thu 17:00: one session, n
   const card = last()
   assert.doesNotMatch(card.text, /Clash/, card.text)
   assert.ok(chat.button(card, 'Apply'), 'a plain change card')
+})
+
+test('item 12 · two items left out of the same week note on one card: both stay out; Undo puts both back', { skip }, async () => {
+  const { note, items } = await setUp()
+  const items2 = [...items, { date: day(THIS, 4), start: '15:00', end: '16:00', title: 'Haircut', kind: 'other', training_type: '', intensity: '', travel_minutes: 0 }]
+  await q(`update week_notes set items = $2 where id = $1`, [note.id, JSON.stringify(items2)])
+  const [{ items: saved }] = await q(`select items from week_notes where id = $1`, [note.id])
+  // the two clash actions as clashOptions builds them, both from the note as it was when the card was made
+  const { weekNoteWithout } = await import('../lib/telegram/weekread.ts')
+  const sent = saved.map((x, i) => ({ ...x, note: { id: note.id, i, items: saved } }))
+  const cancel = (i) => ({ op: 'event_cancel', table: 'week_notes', id: note.id, title: saved[i].title, line: 'left out', patch: { drop_item: weekNoteWithout(`week:${i}`, sent).item } })
+  const { applyActions, undoActions } = await import('../lib/telegram/actions.ts')
+  const { openOwnerSession } = await import('../lib/telegram/owner-session.ts')
+  const sb = await openOwnerSession()
+  const res = await applyActions(sb, [cancel(0), cancel(2)])
+  assert.equal(res.error, null)
+  assert.deepEqual((await q(`select items from week_notes where id = $1`, [note.id]))[0].items.map((x) => x.title), ['Owen'], 'the dentist and the haircut are both out')
+  const back = await undoActions(sb, res.applied)
+  assert.deepEqual(back.skipped, [])
+  assert.deepEqual((await q(`select items from week_notes where id = $1`, [note.id]))[0].items, saved, 'Undo: both back, in order')
+})
+
+test('item 2 · /owen never offers a slot on a test day (ACT Sun 25 Oct); the day before only for a light session, and says so', { skip }, async () => {
+  await q(`update profiles set planning = $2 where user_id = $1`, [chat.users.owner, JSON.stringify({ holidays: PLANNING.holidays, gameDay: 'none', owenDays: { speed: [3], heavy_lower: [4] } })])
+  await add('goals', { title: 'ACT retake', kind: 'test', target_date: ACT_DAY })
+  await nat('/owen')
+  const m = last()
+  const msg = m.text.match(/<code>([\s\S]*)<\/code>/)[1]
+  assert.match(msg, /I’m free /, m.text)
+  assert.doesNotMatch(msg, /Sun \d/, `no slot on the ACT day:
+${msg}`)
+  // Owen's core session is light: Sat (the day before) is offered, marked light only
+  assert.match(msg, /Sat \d\d:\d\d–\d\d:\d\d(?:, \d\d:\d\d–\d\d:\d\d)? \(light only\)/, msg)
+  assert.match(m.text, /game days and test days left out/)
 })

@@ -232,7 +232,7 @@ async function fast(message: string, env: { sb: SupabaseClient; today: string; c
 /** /owen: a ready-to-send message with this week's Owen days and his free slots (tap the message to copy it). */
 async function owenCommand(env: CommandEnv): Promise<CommandResult> {
   // loaded here, not at the top: these modules sit on the bot's own import chain
-  const [{ loadViewData }, { loadWorld }, { planTraining, trainingRooms, optWorldOf, fixedLoad }, { owenMessage }, { activeSessions, owenDays, DAY3 }] = await Promise.all([
+  const [{ loadViewData }, { loadWorld }, { planTraining, trainingRooms, optWorldOf, fixedLoad, testDaysOf }, { owenMessage }, { activeSessions, owenDays, DAY3 }] = await Promise.all([
     import('../views'), import('../ripple'), import('../../week'), import('../owen'), import('../../setup')])
   const data = await loadViewData(env.sb, env.today, env.now)
   const owen = activeSessions(data.planning).filter((s) => s.owen)
@@ -257,14 +257,19 @@ async function owenCommand(env: CommandEnv): Promise<CommandResult> {
   const busy = plan.placed.filter((p) => !mine.has(plan.sessionOf[p.key] ?? '') && p.intensity !== 'light')
   const school = optWorldOf(world).schoolEnd
   const games = new Set(fixedLoad(world).filter((f) => f.type === 'match').map((f) => f.date))
-  const free = slotsWords(owenSlots(rooms, busy, { min: 60, until: world.settings.heavyUntil, buffer: world.settings.bufferMin,
-    from: (date) => (school.has(date) ? world.trainingFrom ?? null : null), skip: games }))
+  // a test day (ACT Sun 25 Oct): no training at all; the day before: light only, so it's offered only if one of
+  // Owen's sessions is light, and said so
+  const tests = testDaysOf(world), light = owen.some((s) => s.intensity === 'light')
+  const skip = new Set([...games, ...tests.on.keys(), ...(light ? [] : [...tests.eve.keys()])])
+  const free = owenSlots(rooms, busy, { min: 60, until: world.settings.heavyUntil, buffer: world.settings.bufferMin,
+    from: (date) => (school.has(date) ? world.trainingFrom ?? null : null), skip })
+    .map((d) => `${slotsWords([d])}${tests.eve.has(d.date) ? ' (light only)' : ''}`).join(' · ')
   const msg = owenMessage(days, data.planning, plan, { free })
   const which = Object.entries(days).map(([k, d]) => `${owen.find((s) => s.key === k)?.name ?? k} ${d.map((x) => DAY3[x - 1]).join('/')}`).join(', ')
   const when = world.from === env.today ? 'from today' : `for the week of ${day(world.from)}`
   return {
     html: ['📋 <b>Message for Owen</b> <i>(tap it to copy)</i>:', `<code>${esc(msg)}</code>`, '',
-      `<i>${fromSetup ? `Owen’s days from your set-up: ${esc(which)}.` : `No Owen days saved yet, so these are this week’s best days: ${esc(which)} (“which days should I give Owen?” saves them).`} Free slots ${esc(when)}: after school and at weekends, around your events, routines and other sessions; game days left out.</i>`].join('\n'),
+      `<i>${fromSetup ? `Owen’s days from your set-up: ${esc(which)}.` : `No Owen days saved yet, so these are this week’s best days: ${esc(which)} (“which days should I give Owen?” saves them).`} Free slots ${esc(when)}: after school and at weekends, around your events, routines and other sessions; game days and test days left out.</i>`].join('\n'),
   }
 }
 

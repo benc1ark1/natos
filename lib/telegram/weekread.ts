@@ -131,9 +131,26 @@ export const isWeekRow = (id: string | null | undefined) => !!id && id.startsWit
 
 /** His week note without the item a "week:N" row is (1️⃣ on a clash with it): every other item kept; ↩️ Undo puts the
  *  note back as it was. null when the row isn't a saved item. */
-export function weekNoteWithout(rowId: string, sent: { note?: WeekNoteRef }[]): { id: string; items: unknown[] } | null {
+export function weekNoteWithout(rowId: string, sent: { note?: WeekNoteRef }[]): { id: string; items: unknown[]; item: unknown } | null {
   const note = isWeekRow(rowId) ? sent[Number(rowId.slice(5))]?.note : null
-  return note ? { id: note.id, items: note.items.filter((_, k) => k !== note.i) } : null
+  return note ? { id: note.id, items: note.items.filter((_, k) => k !== note.i), item: note.items[note.i] } : null
+}
+
+// the same item whatever order its fields come back in (jsonb sorts them)
+const sameJson = (a: unknown, b: unknown): boolean => {
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => sameJson(x, b[i]))
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const ka = Object.keys(a), kb = Object.keys(b)
+    return ka.length === kb.length && ka.every((k) => sameJson((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+  }
+  return a === b
+}
+/** The note's items as they are now, minus one item (1️⃣ on a clash with it). Applied to the note when tapped, so two
+ *  items left out of the same note (one card or two) both stay out. An item already gone: nothing else changes. */
+export function itemsWithout(items: unknown, item: unknown): unknown[] {
+  const list = Array.isArray(items) ? items : []
+  const k = list.findIndex((x) => sameJson(x, item))
+  return list.filter((_, i) => i !== k)
 }
 
 /** His week as calendar-like events (in memory only), leaving out what his calendar already has at that time. Row

@@ -17,7 +17,7 @@ import { upperWeek } from '../lib/setup-edit.ts'
 import { mentalDays } from '../lib/mental.ts'
 import { DEFAULT_RULES, DEFAULT_TYPES } from '../lib/training.ts'
 import { addDays, isoDow } from '../lib/time.ts'
-import { weekEvents, weekNoteWithout, isWeekRow } from '../lib/telegram/weekread.ts'
+import { weekEvents, weekNoteWithout, isWeekRow, itemsWithout } from '../lib/telegram/weekread.ts'
 import { clashOptions } from '../lib/telegram/ripple.ts'
 import { typicalFrom, typicalOwen, owenUpdate } from '../lib/telegram/owen.ts'
 import { EVENTS, PLANNING, GOALS, THIS, NEXT, SCHOOL, TODAY, ACT_DAY, HALF_TERM, day, ev, at } from './support/nat-real.mjs'
@@ -167,7 +167,7 @@ test('item 12 · rows of the typed week are items[N]; 1️⃣ leaves that item o
   const rows = weekEvents(sent, w0.events, w0.changes)
   assert.deepEqual(rows.map((r) => [r.id, r.title]), [['week:1', 'Dentist'], ['week:2', 'Owen']])
   assert.ok(rows.every((r) => isWeekRow(r.id)))
-  assert.deepEqual(weekNoteWithout('week:1', sent), { id: '6f1c2a40-0000-4000-8000-000000000001', items: [raw[0], raw[2]] })
+  assert.deepEqual(weekNoteWithout('week:1', sent), { id: '6f1c2a40-0000-4000-8000-000000000001', items: [raw[0], raw[2]], item: raw[1] })
   assert.equal(weekNoteWithout('week:9', sent), null)
 
   // his own weekly "Owen training" (Tue 18:30) moved to Thu 11:00: on top of the typed Dentist
@@ -180,12 +180,43 @@ test('item 12 · rows of the typed week are items[N]; 1️⃣ leaves that item o
   const cancel = c.options[0].actions.at(-1)
   assert.equal(cancel.table, 'week_notes')
   assert.equal(cancel.id, '6f1c2a40-0000-4000-8000-000000000001', 'the week note’s own id')
-  assert.deepEqual(cancel.patch, { items: [raw[0], raw[2]] })
+  assert.deepEqual(cancel.patch, { drop_item: raw[1] }, 'the item itself, taken out of the note as it is when tapped (not a copy of the whole list)')
   assert.ok(!JSON.stringify(c.options).includes('"week:'), 'no week:N id in any option')
   assert.match(cancel.line, /Dentist<\/b> that day: → left out of the week you sent/)
 
   // onto the typed "Owen" at 17:00: the same session, not a clash
   assert.equal(clashOptions(w, [move('17:00', '18:00')]), null)
+})
+
+test('item 12 · two items left out of the same week note (one card or two) both stay out', () => {
+  const thu = day(THIS, 3), fri = day(THIS, 4)
+  const items = [
+    { date: thu, start: '11:00', end: '12:00', title: 'Dentist', kind: 'other', training_type: '', intensity: '', travel_minutes: 0 },
+    { date: fri, start: '15:00', end: '16:00', title: 'Haircut', kind: 'other', training_type: '', intensity: '', travel_minutes: 0 },
+    { date: thu, start: '17:00', end: '18:00', title: 'Owen', kind: 'training', training_type: 'sprint', intensity: '', travel_minutes: 0 },
+  ]
+  const sent = items.map((x, i) => ({ ...x, note: { id: 'n1', i, items } }))
+  const w0 = world(THIS)
+  const rows = weekEvents(sent, w0.events, w0.changes)
+  const owen = ev({ id: '0e0e0e0e-0000-4000-8000-000000000002', title: 'Owen training', repeat_days: [2], start_time: '18:30', end_time: '19:30', training_type: 'sprint', load: 'hard' })
+  const upper = ev({ id: '0e0e0e0e-0000-4000-8000-000000000003', title: 'Upper', repeat_days: [5], start_time: '12:00', end_time: '13:00', training_type: 'upper', load: 'hard' })
+  const w = { ...w0, events: [...w0.events, owen, upper, ...rows], sent }
+  const move = (e, usual, date, start, end) => ({ op: 'event_move', table: 'event_exceptions', id: e.id, title: e.title, usualDate: usual, line: `${e.title} → ${start}–${end}`,
+    patch: { cancelled: false, new_date: date, new_start: start, new_end: end } })
+  // both cards built from the same note: Owen onto the dentist, upper onto the haircut
+  const a = clashOptions(w, [move(owen, day(THIS, 1), thu, '11:00', '12:00')]).options[0].actions.at(-1)
+  const b = clashOptions(w, [move(upper, day(THIS, 4), fri, '15:00', '16:00')]).options[0].actions.at(-1)
+  assert.deepEqual([a.id, b.id], ['n1', 'n1'])
+  // tapped in turn, each applies to the note as it is then: both stay out (it used to put the first one back)
+  // (the database hands the items back with their fields in its own order)
+  const shuffled = (xs) => xs.map((x) => Object.fromEntries(Object.entries(x).reverse()))
+  const once = itemsWithout(shuffled(items), a.patch.drop_item)
+  assert.deepEqual(once.map((x) => x.title), ['Haircut', 'Owen'])
+  const twice = itemsWithout(shuffled(once), b.patch.drop_item)
+  assert.deepEqual(twice.map((x) => x.title), ['Owen'])
+  // an item already gone: nothing else is taken out
+  assert.deepEqual(itemsWithout(twice, a.patch.drop_item).map((x) => x.title), ['Owen'])
+  assert.deepEqual(itemsWithout(null, a.patch.drop_item), [])
 })
 
 // ---------------------------------------------------------------------------
@@ -220,6 +251,16 @@ test('item 15 · only sessions he gave Owen count, and only a genuinely better w
   const bad = typicalOwen(world(SCHOOL, { planning, events: light }))
   assert.ok(!bad.days.heavy_lower.includes(7), JSON.stringify(bad.days))
   assert.equal(owenUpdate(bad, planning.owenDays, planning), true)
+})
+
+test('item 15 · a better-looking week that makes one of Owen’s sessions lighter is never suggested, even when his days don’t work', () => {
+  const light = EVENTS.filter((e) => e.id !== 'club-football')
+  const planning = { ...PLANNING, owenDays: { speed: [2], heavy_lower: [7] } }
+  const bad = typicalOwen(world(SCHOOL, { planning, events: light }))
+  assert.equal(owenUpdate(bad, planning.owenDays, planning), true)
+  const lighter = { ...bad, plan: { ...bad.plan, placed: bad.plan.placed.map((x) => (bad.plan.sessionOf[x.key] === 'speed' ? { ...x, intensity: 'light' } : x)), cost: bad.plan.cost - 1000 } }
+  assert.equal(owenUpdate(lighter, planning.owenDays, planning), false)
+  assert.equal(owenUpdate({ ...bad, kept: null }, planning.owenDays, planning), false, 'no saved-days plan to compare with: no card')
 })
 
 test('real data sanity: half-term runs 17 Oct – 1 Nov', () => {

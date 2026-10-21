@@ -20,6 +20,7 @@ import { loadRules, ruleToRow, saveDefaultRules, typeOf } from '../training-data
 import { DAY_NAMES, modeWords, type Place } from '../travel'
 import { SETTINGS, currentSettings, parseSetting, showSetting, moreSettings } from '../settings'
 import { cleanPattern, ruleWords, type MailRule } from '../mail/rules'
+import { itemsWithout } from './weekread'
 import { DEFAULT_COSTS, levelWord, sessionOverride, typeCost, type CostRow } from '../load'
 import { gameChange, ignoreChange, owenChange, placeChange, sessionChange, upperWeekChange } from '../setup-edit'
 import { loadCosts } from '../training-data'
@@ -41,7 +42,7 @@ export type C2Op = (typeof C2_OPS)[number]
 
 type Raw = { op: string; value: string; date: string; date_to: string; time: string; time_to: string; number: number; words: string }
 export type C2Action = {
-  op: C2Op; table: 'events' | 'event_exceptions' | 'goals' | 'weekly_targets' | 'training_rules' | 'places' | 'travel_times' | 'profiles' | 'integrations' | 'pipeline_stages' | 'topics' | 'mistakes' | 'guides' | 'guide_logs' | 'mail_rules' | 'load_costs' | 'plan_blocks' | 'subjects' | 'tasks'; id: string | null; title: string; line: string
+  op: C2Op; table: 'events' | 'event_exceptions' | 'goals' | 'weekly_targets' | 'training_rules' | 'places' | 'travel_times' | 'profiles' | 'integrations' | 'pipeline_stages' | 'topics' | 'mistakes' | 'guides' | 'guide_logs' | 'mail_rules' | 'load_costs' | 'plan_blocks' | 'subjects' | 'tasks' | 'week_notes'; id: string | null; title: string; line: string
   patch: Record<string, unknown>
   usualDate?: string     // a one-week change: the date the session normally happens
 }
@@ -908,9 +909,10 @@ export async function applyC2(sb: SupabaseClient, a: C2Action, now: string, toda
     const { row } = await session(sb, a.id!, a.usualDate!)
     return { op: a.op, table: a.table, id: a.id!, title: a.title, before, after: pick(row ?? {}, CHANGE_KEYS), usualDate: a.usualDate }
   }
-  const patch = fill(a.patch)
-  const keys = Object.keys(patch)
+  // an item of his typed week left out (1️⃣ on a clash): taken out of the note as it is now, never a stale copy of it
   const row = await readRow(sb, a.table, a.id!)
+  const patch = a.table === 'week_notes' && 'drop_item' in a.patch ? { items: itemsWithout(row.items, a.patch.drop_item) } : fill(a.patch)
+  const keys = Object.keys(patch)
   const before = pick(row, keys)
   let err: string | null = null
   if (a.op === 'goal_archive') err = await setGoalArchived(sb, row as unknown as Goal, true)

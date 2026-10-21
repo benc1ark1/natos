@@ -151,7 +151,7 @@ export function clashOptions(w: WeekWorld, actions: Action[]): { clash: string; 
     // an item of the week he typed is left out of that week note (never sent to the database as an event id)
     const note = isWeekRow(other.event.id) ? weekNoteWithout(other.event.id, w.sent ?? []) : null
     const cancelOther: Action | null = note
-      ? { op: 'event_cancel', table: 'week_notes', id: note.id, title: other.event.title, line: `<b>${esc(other.event.title)}</b> that day: → left out of the week you sent`, patch: { items: note.items } }
+      ? { op: 'event_cancel', table: 'week_notes', id: note.id, title: other.event.title, line: `<b>${esc(other.event.title)}</b> that day: → left out of the week you sent`, patch: { drop_item: note.item } }
       : other.event.id.includes(':') ? null   // another in-memory row (his usual game): nothing to cancel in the database
       : other.event.repeat_days?.length
       ? { op: 'event_cancel', table: 'event_exceptions', id: other.event.id, title: other.event.title, usualDate: other.usualDate, line: `<b>${esc(other.event.title)}</b> that day: → cancelled <i>(just this week)</i>`, patch: { cancelled: true, new_date: other.change?.new_date ?? null, new_start: other.change?.new_start ?? null, new_end: other.change?.new_end ?? null } }
