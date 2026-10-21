@@ -49,7 +49,11 @@ test('20: "Homework from 15/10" → its objective, the questions in the notes, t
   // what the old code had already made of the physics one: "Homework from 16.10", no questions, due at noon
   await add('tasks', { title: 'Homework from 16.10', origin: 'school', importance: 'must', status: 'this_week', source: 'import', external_id: 'classroom:fedcba9876543210',
     due_at: `${SCHOOL}T12:00:00Z`, details: 'Physics Ph1a', hand_in: 'Google Classroom' })
-  g.addCalendar('feed@x', 'Homework feed', [fm, ph, sheet])
+  // and an old timed one (SCHOOL week, Wed 4 Nov 09:00) the old code saved at the day only
+  const vec = { id: 'v1', summary: 'Assignment: Vectors sheet', start: { dateTime: at(day(SCHOOL, 2), '09:00') }, end: { dateTime: at(day(SCHOOL, 2), '09:00') }, description: feed('', 'bbbbbbbbbbbbbbbb') }
+  await add('tasks', { title: 'Vectors sheet', origin: 'school', importance: 'must', status: 'this_week', source: 'import', external_id: 'classroom:bbbbbbbbbbbbbbbb',
+    due_at: `${day(SCHOOL, 2)}T12:00:00Z`, details: 'Maths Further Mf1a · Due 09:00' })
+  g.addCalendar('feed@x', 'Homework feed', [fm, ph, sheet, vec])
   const r = await sync()
   assert.ok(r?.ok, r?.error)
 
@@ -62,7 +66,8 @@ test('20: "Homework from 15/10" → its objective, the questions in the notes, t
   assert.equal(c.title, 'Integration sheet', 'his teacher’s own title')
   assert.match(c.details, /Q1–10\./)
   // the old one: the same task (never a second), its title and notes put right, still due Mon 2 Nov
-  assert.equal(rows.length, 3)
+  assert.equal(rows.length, 4)
+  assert.equal(by.bbbbbbbbbbbbbbbb.due_at.toISOString(), at(day(SCHOOL, 2), '09:00'), 'the old timed one gets its real due time')
   assert.equal(b.title, 'Simple harmonic motion: read 4.1–4.3 and answer questions 1–8')
   assert.equal(b.details, 'Physics Ph1a\n\nHi all,\nSimple harmonic motion: read 4.1–4.3 and answer questions 1–8.')
   assert.equal(b.due_at.toISOString(), `${SCHOOL}T12:00:00.000Z`)

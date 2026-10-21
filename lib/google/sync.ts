@@ -397,7 +397,9 @@ async function importHomework(sb: SupabaseClient, list: { cal: CalSetting; g: GE
       if (old.due_at && dateISOOf(old.due_at) !== due) {   // the teacher moved the date
         patch.due_at = dueAt
         if (['inbox', 'today', 'this_week', 'this_month'].includes(old.status)) patch.status = autoStatus(due, today)
-      } else if (old.due_at && old.due_at !== dueAt && Date.parse(old.due_at) !== Date.parse(dueAt)) patch.due_at = dueAt   // its real due time
+      } else if (old.due_at && Date.parse(old.due_at) === Date.parse(dueAtFromDate(due)) && Date.parse(old.due_at) !== Date.parse(dueAt)) {
+        patch.due_at = dueAt   // made before fix round 20 (the day only): its real due time
+      }
       // one made before fix round 20 ("Homework from 14/10", no questions): the real title and notes, unless he changed them
       if (old.title === raw && title !== raw) patch.title = title
       if (details && details !== old.details && (!old.details || details.startsWith(old.details))) patch.details = details
