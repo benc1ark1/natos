@@ -138,7 +138,7 @@ export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, 
       const sameCardPlaces = raw.filter((x) => x.op === 'place_new' || x.op === 'event_weekly' || x.op === 'event_new')
         .map((x) => Object.fromEntries((x.value ?? '').split(';').map((y) => y.split('=').map((z) => z.trim())))[x.op === 'place_new' ? 'name' : 'place']).filter(Boolean)
       const placeNews = raw.filter((x) => x.op === 'place_new').map((x) => Object.fromEntries((x.value ?? '').split(';').map((y) => y.split('=').map((z) => z.trim()))).name).filter(Boolean)
-      const r = checkC2(op, { ...a, date_to: a.date_to ?? '', time_to: a.time_to ?? '', sameCardPlaces, placeNews } as typeof a & { date_to: string; time_to: string }, ref, c2, (w) => grounded(w, said), today)
+      const r = checkC2(op, { ...a, date_to: a.date_to ?? '', time_to: a.time_to ?? '', sameCardPlaces, placeNews, said } as typeof a & { date_to: string; time_to: string }, ref, c2, (w) => grounded(w, said), today)
       if (r.problem) problems.push(r.problem)
       if (r.action) actions.push(r.action)
       continue

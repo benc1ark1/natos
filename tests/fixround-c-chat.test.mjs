@@ -154,3 +154,71 @@ test('14: an extra upper in half-term (Fri 30 Oct): the event and its line say �
   const [e] = await q(`select title, training_type from events where title like 'Upper%'`)
   assert.deepEqual(e, { title: 'Upper · PureGym', training_type: 'upper' })
 })
+
+// ---------------------------------------------------------------------------
+// Second pass (review): 13 on the instruction path; 10 when the AI labels a record change 'plan'
+// ---------------------------------------------------------------------------
+
+test('13 + 10: "Owen moved to Wed 28 Oct 11:00" while the week card waits, the AI first calling it a plan, then sending date "" and no date_to: its own card, Wed 28 Oct kept (not Tue 27 Oct)', { skip }, async () => {
+  const { owen } = await weekCardWaiting()
+  const [first] = await cards()
+  // with the card: the AI (told changes while a plan card is open are 'plan') calls it a plan
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Re-planning your week.', plan_week: true }))
+  // read again without the card: an instruction, the date only in his words (Nat's case, 21 Oct)
+  chat.ai.script(CHAT, (body) => {
+    assert.match(body.messages[0].content.map((c) => c.text).join('\n'), /<open_card>\(none\)<\/open_card>/, 'read without the card')
+    return brain({ intent: 'instruction', reply: 'Moving Owen’s session.', actions: [act({ ref: refIn(body, 'Owen speed') ?? '', date: '', date_to: '', time: '11:00', words: 'Wednesday 28 October 11:00' })] })
+  })
+  await nat('Owen moved to Wed 28 Oct 11:00')
+  show(last())
+  assert.match(last().text, /Owen speed<\/b>: Tue 27 Oct 18:30–19:30 → Wed 28 Oct 11:00–12:00 <i>\(just this week\)/)
+  assert.doesNotMatch(chat.tg.sent().map((m) => m.text).join('\n'), /wasn’t in your words/)
+  assert.deepEqual((await cards()).map((c) => [c.id, c.status]), [[first.id, 'open']], 'the week card is untouched')
+  assert.equal(chat.ai.byModel(PLAN).length, 1, 'no second AI plan')
+  await tapOn('Apply')
+  const [ex] = await q(`select on_date::text, new_date::text, new_start::text from event_exceptions where event_id = $1`, [owen.id])
+  assert.deepEqual(ex, { on_date: '2026-10-27', new_date: '2026-10-28', new_start: '11:00:00' })
+  chat.noSurprises()
+})
+
+test('13: the AI sends the usual day (Tue 27 Oct) as date and date_to: the date he gave (Wed 28 Oct) is kept', { skip }, async () => {
+  await q(`update profiles set planning = $2 where user_id = $1`, [chat.users.owner, JSON.stringify(PLANNING)])
+  const owen = await add('events', { title: 'Owen speed', repeat_days: [2], start_time: '18:30', end_time: '19:30', repeat_from: '2026-09-01' })
+  chat.ai.script(CHAT, (body) => brain({ intent: 'instruction', reply: 'Moving it.', actions: [act({ ref: refIn(body, 'Owen speed') ?? '', date: day(NEXT, 1), date_to: day(NEXT, 1), time: '11:00', words: 'Wednesday 28th' })] }))
+  await nat('Owen speed is Wed 28 Oct 11:00 this time')
+  show(last())
+  assert.match(last().text, /Owen speed<\/b>: Tue 27 Oct 18:30–19:30 → Wed 28 Oct 11:00–12:00/)
+  await tapOn('Apply')
+  const [ex] = await q(`select on_date::text, new_date::text from event_exceptions where event_id = $1`, [owen.id])
+  assert.deepEqual(ex, { on_date: '2026-10-27', new_date: '2026-10-28' })
+  chat.noSurprises()
+})
+
+test('10: "add physics homework due Friday" while the week card waits, the AI calling it a plan: read again on its own, a new task card; the week card stays', { skip }, async () => {
+  await weekCardWaiting()
+  const [first] = await cards()
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Adding it to your week.', plan_week: true }))
+  chat.ai.script(CHAT, (body) => {
+    assert.match(body.messages[0].content.map((c) => c.text).join('\n'), /<open_card>\(none\)<\/open_card>/, 'read without the card')
+    return brain({ intent: 'new', item_text: 'physics homework due Friday', item_kind: 'task' })
+  })
+  chat.ai.script(SORT, sorted({ kind: 'task', title: 'Physics homework', subject: 'Physics', due_date: day(THIS, 4), date_words: 'Friday' }))
+  await nat('add physics homework due Friday')
+  show(last())
+  assert.match(last().text, /Physics homework/)
+  assert.match(last().text, /Fri 23 Oct/)
+  assert.ok(chat.button(last(), 'Save'))
+  assert.deepEqual((await cards()).map((c) => [c.id, c.status]), [[first.id, 'open']], 'the week card is untouched')
+  assert.equal(chat.ai.byModel(PLAN).length, 1, 'no second AI plan')
+  chat.noSurprises()
+})
+
+test('10: "move upper on Friday to Saturday" (an edit OF the week card) still changes the waiting card', { skip }, async () => {
+  await weekCardWaiting()
+  const [first] = await cards()
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Moving upper.', plan_week: true, plan_training: '' }))
+  await nat('move upper on Friday to Saturday')
+  const all = await cards()
+  assert.equal(all.find((c) => c.id === first.id).status, 'replaced')
+  assert.match(last().text, /✏️ <b>Changed<\/b>/)
+})

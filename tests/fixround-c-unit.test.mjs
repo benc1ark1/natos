@@ -5,9 +5,9 @@
 // Run: node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs --test tests/fixround-c-unit.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { editsPlan, otherWeek } from '../lib/telegram/converse.ts'
-import { checkProposal, dateInWords, nullify } from '../lib/capture/server.ts'
-import { checkC2, eventDetails, shortPlace } from '../lib/telegram/actions-c2.ts'
+import { editsPlan, namesRecordChange, otherWeek } from '../lib/telegram/converse.ts'
+import { checkProposal, dateInWords, namedDates, nullify } from '../lib/capture/server.ts'
+import { checkC2, eventDetails, shortPlace, timeInWords } from '../lib/telegram/actions-c2.ts'
 import { DEFAULT_PLACES } from '../lib/setup.ts'
 import { EVENTS, NEXT, PLANNING, SCHOOL, THIS, TODAY, day, ev } from './support/nat-real.mjs'
 
@@ -149,4 +149,88 @@ test('14: the pieces: details out of the name; a place’s short name leaves its
   assert.equal(shortPlace('PureGym Swiss Cottage', DEFAULT_PLACES), 'PureGym')
   assert.equal(shortPlace('School gym', DEFAULT_PLACES), 'School gym')
   assert.equal(shortPlace('Christchurch Finchley College', []), 'Christchurch Finchley College')
+})
+
+// ---------------------------------------------------------------------------
+// Second pass (review): the instruction path for 13, a record change the AI labels 'plan' (10), shortPlace (14)
+// ---------------------------------------------------------------------------
+
+/** checkC2 event_move for Owen speed (term: Tue 18:30) with what the AI sent and his own message (`said`), as the bot does. */
+const owenMove = (said, o = {}) => checkC2('event_move',
+  { op: 'event_move', ref: 'E1', value: '', date: '', date_to: '', time: '11:00', time_to: '', number: 0, words: 'Wednesday 28 October', said, ...o },
+  { kind: 'event', id: OWEN.id }, { events: new Map([[OWEN.id, OWEN]]), changes: [], goals: new Map(), places: [], planning: PLANNING },
+  (w) => w.length >= 3 && said.toLowerCase().includes(w.toLowerCase()), TODAY)
+
+test('13 (instruction): "Owen moved to Wed 28 Oct 11:00" with date "" / the usual day and no date_to keeps Wed 28 Oct, not Tue 27 Oct; no “wasn’t in your words”', () => {
+  for (const o of [{}, { date: day(NEXT, 1) }, { date_to: day(NEXT, 1) }, { date: day(NEXT, 2) }]) {
+    const r = owenMove('Owen moved to Wed 28 Oct 11:00', o)
+    assert.ok(r.action, `${JSON.stringify(o)}: ${r.problem}`)
+    assert.equal(r.action.usualDate, '2026-10-27', 'the Tue 27 Oct session moves')
+    assert.deepEqual(r.action.patch, { cancelled: false, new_date: '2026-10-28', new_start: '11:00', new_end: '12:00' }, JSON.stringify(o))
+    assert.match(r.action.line, /Tue 27 Oct 18:30–19:30 → Wed 28 Oct 11:00–12:00/)
+  }
+  // his date in any common form, whatever the AI's words say
+  for (const said of ['Owen moved to 28/10 at 11am', 'Owen is the 28th October 11:00 now', 'Owen speed Wednesday 28th 11:00', 'owen: oct 28, 11.00']) {
+    const r = owenMove(said)
+    assert.equal(r.action?.patch.new_date, '2026-10-28', `${said}: ${r.problem}`)
+  }
+  // a weekday alone: the AI's day stands when his words name it ("Wednesday" for Wed 28 Oct, 7 days on)
+  assert.equal(owenMove('Owen moved to Wednesday 11:00', { date_to: day(NEXT, 2) }).action?.patch.new_date, '2026-10-28')
+  // the first school week (SCHOOL): Wed 4 Nov moves the Tue 3 Nov session, not the next one
+  const s = owenMove('Owen speed moved to Wed 4 Nov 5pm', { time: '17:00', words: 'Wednesday 4 November' })
+  assert.equal(s.action?.usualDate, '2026-11-03', s.problem)
+  assert.equal(s.action.patch.new_date, '2026-11-04')
+  // THIS week: "Fri 23 Oct" (no session left this week) moves the next one to that Friday
+  assert.equal(owenMove('Owen Fri 23 Oct 11:00', { words: 'Friday 23rd' }).action?.patch.new_date, '2026-10-23')
+  // a day he never said is still refused
+  assert.match(owenMove('Owen at 11 this time', { date_to: day(NEXT, 3), words: 'Thursday' }).problem, /wasn’t in your words/)
+})
+
+test('13: the pieces: dates named with a day number, and clock times in his words', () => {
+  assert.deepEqual(namedDates('Owen moved to Wed 28 Oct 11:00', TODAY), ['2026-10-28'])
+  assert.deepEqual(namedDates('Owen Wednesday 28th', TODAY), ['2026-10-28'])
+  assert.deepEqual(namedDates('Owen Wed 11:00', TODAY), [], 'a clock time isn’t the 11th')
+  assert.deepEqual(namedDates('upper on Friday', TODAY), [])
+  assert.equal(dateInWords('2026-10-28', 'Owen speed Wednesday 28th', TODAY), true)
+  for (const [t, w] of [['11:00', 'Wed 28 Oct 11:00'], ['11:00', 'at 11am'], ['11:00', 'at 11'], ['17:00', '5pm'], ['18:30', 'half 6'], ['18:30', '6.30']]) assert.equal(timeInWords(t, w), true, `${t} in ${w}`)
+  for (const [t, w] of [['11:00', 'Wed 28 Oct'], ['17:00', '7pm'], ['18:30', 'half 7']]) assert.equal(timeInWords(t, w), false, `${t} in ${w}`)
+})
+
+test('10: a record change the AI labels “plan” while the week card waits is its own message; an edit OF the card still edits it', () => {
+  for (const mon of [THIS, NEXT, SCHOOL]) {
+    const card = weekCard(mon)
+    assert.equal(editsPlan('Owen moved to Wed 28 Oct 11:00', decision('plan'), card, TODAY), false, mon)
+    assert.equal(editsPlan('add physics homework due Friday', decision('plan'), card, TODAY), false, mon)
+    assert.equal(editsPlan('add physics homework due Friday', decision('correction'), card, TODAY), false, '(it starts with “add”, but it’s a task)')
+    for (const m of ['move upper on Friday to Saturday', 'less study Friday', 'redo', 'drop the FM block on Tuesday', 'swap Wednesday and Thursday'])
+      assert.equal(editsPlan(m, decision('plan'), card, TODAY), true, m)
+  }
+  assert.equal(namesRecordChange('Owen moved to Wed 28 Oct 11:00', TODAY), true)
+  assert.equal(namesRecordChange('Owen speed Wed 28 Oct 11:00', TODAY), true, 'a date and a time: an event’s new day')
+  assert.equal(namesRecordChange('physics homework is due Friday now', TODAY), true)
+  assert.equal(namesRecordChange('nothing after 10pm from now on', TODAY), true)
+  for (const m of ['move upper on Friday to Saturday', 'upper Sat at PureGym', 'less study Friday', 'start at 12', 'add the gym', 'redo']) assert.equal(namesRecordChange(m, TODAY), false, m)
+})
+
+test('14: “Upper · PureGym” whichever list has the place first (his places with another address, or no address), and whatever shape the AI sent', () => {
+  const mine = [{ id: 'pl-pg', name: 'PureGym Swiss Cottage', address: 'Finchley Road, London NW3 6LU', lat: null, lng: null, is_home: false, archived_at: null }]
+  // his places listed before his training places (the bug: only the first one's address was looked at)
+  assert.equal(shortPlace('PureGym Swiss Cottage', [...mine, ...DEFAULT_PLACES]), 'PureGym')
+  assert.equal(shortPlace('puregym swiss cottage', [{ ...mine[0], address: null }, ...DEFAULT_PLACES]), 'PureGym')
+  // his own training places, the PureGym one with no address: its key still says the short name
+  const onlyKey = [{ key: 'puregym', name: 'PureGym Swiss Cottage', address: null }]
+  assert.equal(shortPlace('PureGym Swiss Cottage', [{ ...mine[0], address: null }, ...onlyKey]), 'PureGym')
+  assert.equal(shortPlace('School gym', [...mine, ...DEFAULT_PLACES]), 'School gym')
+  assert.equal(shortPlace('Home', [...mine, ...DEFAULT_PLACES]), 'Home')
+  const r = { ...rows, places: mine }
+  for (const value of ['Upper (PureGym Swiss Cottage; type=upper)', 'name=Upper; place=PureGym Swiss Cottage; type=upper', 'Upper (PureGym Swiss Cottage, type=upper)', 'Upper @ PureGym Swiss Cottage', 'Upper · PureGym Swiss Cottage']) {
+    for (const mon of [THIS, NEXT, SCHOOL]) {
+      const a = checkC2('event_new', { op: 'event_new', value, date: day(mon, 4), date_to: '', time: '15:00', time_to: '16:30', number: 0, words: 'Fri' }, undefined, r, () => true, TODAY).action
+      assert.equal(a?.title, 'Upper · PureGym', `${value} (${mon})`)
+      assert.doesNotMatch(a.line, /type=|\(PureGym|Swiss Cottage/)
+      assert.equal(a.patch.place_id, 'pl-pg')
+    }
+  }
+  const weekly = checkC2('event_weekly', { op: 'event_weekly', value: 'Upper (PureGym Swiss Cottage; type=upper)', date: '', date_to: '', time: '15:00', time_to: '16:30', number: 0, words: 'every Saturday' }, undefined, r, () => true, TODAY).action
+  assert.equal(weekly.title, 'Upper · PureGym')
 })

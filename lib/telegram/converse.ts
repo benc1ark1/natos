@@ -11,6 +11,7 @@ import { recordUsage, budget } from '../ai/usage'
 import { loadPlannerContext, type PlannerContext } from '../ask/server'
 import type { AskAnswer } from '../ask/types'
 import { addDays, todayISO, weekStartISO } from '../time'
+import { namedDates } from '../capture/server'
 import { esc, type Button } from './api'
 import { botAsked, looksLikeChange, looksLikeMeta, looksLikePartialEdit, route, think, triage, type Decision } from './brain'
 import { checkActions, loadRows } from './actions'
@@ -208,7 +209,10 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   // plan / correction / instruction went into the waiting week card). The week card re-fits after that change's ✅.
   const ownPlan = !ownMessage && card?.kind === 'plan' && card.status !== 'editing' && !(card.payload as { add?: boolean }).add
     && ['plan', 'correction', 'instruction'].includes(res.decision.intent) && !editsPlan(message, res.decision, card, today)
-  if (ownMessage || (ownPlan && res.decision.intent === 'correction')) {
+  // (a record change the AI labelled 'plan', or an instruction it found no change in, is read again without the card too)
+  const reread = ownPlan && (res.decision.intent === 'correction'
+    || (namesRecordChange(message, today) && !(res.decision.intent === 'instruction' && (res.decision.actions.length || res.decision.asks.length))))
+  if (ownMessage || reread) {
     const again = await ask(null)
     if (again.ok) { res = again; card = null }
   } else if (ownPlan) card = null   // (its changes are about saved records already: no need to ask again)
@@ -361,13 +365,30 @@ export function otherWeek(message: string, card: Pick<Pending, 'payload'>, today
   return false
 }
 
+// A change to a saved record, not to a plan card: a task's due date or a new task ("add physics homework due Friday"),
+// an event that moved or was cancelled, a standing rule or setting ("from now on")
+const RECORD_TASK = /\b(?:due|deadline|hand(?:ed)?\s+in)\b|^(?:add|new|create)\b.*\b(?:task|homework|hw|test|exam|essay|coursework|reminder)\b|\bremind me\b/i
+const RECORD_EVENT = /\b(?:moved|cancelled|canceled|rescheduled|postponed|called off)\b/i
+const RECORD_SETTING = /\b(?:from now on|by default|settings?)\b/i
+
+/** Does his message name a change to a saved task, event or setting ("Owen moved to Wed 28 Oct 11:00", "add physics
+ *  homework due Friday")? Then it's its own message even while a plan card waits, whatever the AI called it. */
+export function namesRecordChange(message: string, today: string): boolean {
+  const m = message.trim()
+  if (RECORD_TASK.test(m) || RECORD_EVENT.test(m) || RECORD_SETTING.test(m)) return true
+  // a calendar date with a clock time ("Owen speed Wed 28 Oct 11:00"): an event's new day and time
+  return namedDates(m, today).length > 0 && /\b\d{1,2}(?:[:.]\d{2}|\s*(?:am|pm))\b/i.test(m)
+}
+
 /**
- * Does his message change the plan card waiting (re-plan it), or is it a message of its own? A plan request is a change
- * (unless it's for another week); changes to saved records, 'done' reports and new items never are; a "correction" is
- * only when it reads like a change to a plan or names a session on the card.
+ * Does his message change the plan card waiting (re-plan it), or is it a message of its own? Only an edit of the card
+ * itself is a change (move, drop or swap a block or session on it, "redo", "less study Friday"; a plan request unless
+ * it's for another week). Changes to saved records (even ones the AI labelled 'plan'), 'done' reports and new items
+ * never are; a "correction" is only when it reads like a change to a plan or names a session on the card.
  */
 export function editsPlan(message: string, d: Pick<Decision, 'intent' | 'actions' | 'asks'>, card: Pick<Pending, 'payload'>, today: string): boolean {
   if (looksDone(message)) return false
+  if (namesRecordChange(message, today)) return false
   if (d.intent === 'plan') return !otherWeek(message, card, today)
   if (d.intent === 'instruction') return !d.actions.length && !d.asks.length
   if (d.intent !== 'correction') return false

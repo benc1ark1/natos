@@ -23,6 +23,7 @@ import { cleanPattern, ruleWords, type MailRule } from '../mail/rules'
 import { DEFAULT_COSTS, levelWord, sessionOverride, typeCost, type CostRow } from '../load'
 import { gameChange, ignoreChange, owenChange, placeChange, sessionChange, upperWeekChange } from '../setup-edit'
 import { trainingPlaces } from '../setup'
+import { dateInWords, namedDates } from '../capture/server'
 import { loadCosts } from '../training-data'
 
 export const C2_OPS = ['event_move', 'event_cancel', 'event_new', 'event_weekly', 'test_date', 'goal_topics', 'goal_archive', 'training_type', 'rule_set', 'rule_off', 'rule_on',
@@ -91,6 +92,28 @@ export function findSession(ev: EventRow, changes: EventException[], date: strin
   return occ.find((o) => o.date >= today && !o.cancelled) ?? null
 }
 
+/** The session on one of these dates (its usual day, or where it moved to), if there is one. */
+function sessionOn(ev: EventRow, changes: EventException[], dates: string[], today: string): Occurrence | null {
+  for (const d of dates) { const o = findSession(ev, changes, d, today); if (o) return o }
+  return null
+}
+/** The session in the Mon–Sun week of this date ("Owen … Wed 4 Nov" moves the Tue 3 Nov session, not the next one). */
+function sessionInWeek(ev: EventRow, changes: EventException[], date: string, today: string): Occurrence | null {
+  const occ = expandEvents([ev], addDays(today, -1), addDays(today, 126), changes.filter((c) => c.event_id === ev.id))
+  return occ.find((o) => weekStartISO(o.usualDate) === weekStartISO(date) && o.usualDate >= today && !o.cancelled) ?? null
+}
+/** Do his words give this time ("11:00", "11.00", "11am", "11", "6:30pm", "half 6")? */
+export function timeInWords(time: string, text: string): boolean {
+  const t = (text ?? '').toLowerCase()
+  const h = Number(time.slice(0, 2)), m = Number(time.slice(3, 5)), h12 = h % 12 || 12, mm = time.slice(3, 5)
+  const hs = [...new Set([h, h12, String(h).padStart(2, '0')])].join('|')
+  const ampm = h >= 12 ? 'pm' : 'am'
+  if (new RegExp(`\\b(?:${hs})[:.]${mm}\\b|\\b${h12}[:.]${mm}\\s*${ampm}\\b`).test(t)) return true
+  if (m === 0) return new RegExp(`\\b${h12}\\s*(?:${ampm})\\b|\\b(?:${hs})\\s*o['’]?clock\\b|\\bat\\s+(?:${hs})\\b(?![:.]\\d)`).test(t)
+  if (m === 30) return new RegExp(`\\bhalf\\s+(?:past\\s+)?${h12}\\b`).test(t)
+  return false
+}
+
 /** Check one proposed event/test/goal change. `grounded(words)`: are these his words? */
 const kvOf = (v: string) => Object.fromEntries((v ?? '').split(';').map((x) => x.split('=').map((y) => y.trim())).filter((x) => x.length === 2 && x[1]))
 
@@ -109,20 +132,39 @@ export function eventDetails(value: string): { name: string; kv: Record<string, 
   let v = (value ?? '').trim()
   // details in brackets at the end ("Dentist (Dr Patel)" with no details in it stays as it is)
   const m = v.match(/^(.*?)\s*[([]([^()[\]]*)[)\]]\s*$/)
-  const inName = !!m && !!m[1].trim() && /[=;]/.test(m[2])
+  let inName = !!m && !!m[1].trim() && /[=;]/.test(m[2])
   if (inName) v = m![1]
-  for (const part of v.split(';').map((x) => x.trim()).filter(Boolean)) put(part, 'name')
-  if (inName) for (const part of m![2].split(';').map((x) => x.trim()).filter(Boolean)) put(part, 'place')
+  // parts split at ";" (or at ", type=…" when the AI used commas)
+  const split = (x: string) => x.split(/;|,(?=\s*[a-z_]+\s*=)/i).map((y) => y.trim()).filter(Boolean)
+  for (const part of split(v)) put(part, 'name')
+  if (inName) for (const part of split(m![2])) put(part, 'place')
+  // "Upper @ PureGym Swiss Cottage" / "Upper · PureGym Swiss Cottage": the place after the name
+  const at = (kv.name ?? '').match(/^(.+?)\s+[@·]\s+(.+)$/)
+  if (at && !kv.place) { kv.name = at[1]; kv.place = at[2]; inName = true }
   const name = kv.name ?? kv.title ?? ''
   return { name: name.replace(/\s+/g, ' ').trim().slice(0, 120), kv, inName }
 }
 
-/** A place's short name for an event title: "PureGym Swiss Cottage" → "PureGym" (the area in its address left out). */
-export function shortPlace(name: string, places: { name: string; address?: string | null }[]): string {
-  const p = places.find((x) => x.name.toLowerCase() === name.trim().toLowerCase())
-  const full = p?.name ?? name.trim()
-  const area = (p?.address ?? '').split(',')[0].trim()
-  return area && full.toLowerCase().endsWith(` ${area.toLowerCase()}`) ? full.slice(0, -area.length - 1).trim() : full
+/**
+ * A place's short name for an event title: "PureGym Swiss Cottage" → "PureGym". Every place of that name counts (his
+ * places and his training places, whichever is listed first): the area is left out when it is any part of its address,
+ * or the first part of another known place's address ("Swiss Cottage, London"), or when its key is the first word(s)
+ * ("puregym"). (Fix round 14: a place in his places with another address kept "PureGym Swiss Cottage".)
+ */
+export function shortPlace(name: string, places: { name: string; address?: string | null; key?: string }[]): string {
+  const same = places.filter((x) => x.name.trim().toLowerCase() === name.trim().toLowerCase())
+  const full = (same[0]?.name ?? name).trim()
+  const parts = (p: { address?: string | null }) => (p.address ?? '').split(',').map((x) => x.trim())
+  const areas = [...new Set([...same.flatMap(parts), ...places.map((p) => parts(p)[0])].filter((x) => x && !/\d/.test(x)))].sort((a, b) => b.length - a.length)
+  for (const area of areas) {
+    if (full.length > area.length + 1 && full.toLowerCase().endsWith(` ${area.toLowerCase()}`)) return full.slice(0, -area.length - 1).trim()
+  }
+  const words = full.split(/\s+/), flat = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  for (const p of same) {
+    const k = words.findIndex((_, i) => i < words.length - 1 && !!p.key && flat(words.slice(0, i + 1).join('')) === flat(p.key))
+    if (k >= 0) return words.slice(0, k + 1).join(' ')
+  }
+  return full
 }
 
 export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | undefined, rows: C2Rows, grounded: (w: string) => boolean, today: string):
@@ -276,7 +318,24 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
     if (!ev || ev.archived_at) return { problem: 'couldn’t find that event' }
     if ((ev as EventRow & { external_source?: string }).external_source === 'google') return { problem: `“${ev.title}” is on your Google calendar, so I can’t change it` }
     const every = (a.value ?? '').trim().toLowerCase() === 'every'
-    const o = findSession(ev, rows.changes, isDate(a.date) ? a.date : null, today)
+    // his message (and what he said in the last 30 minutes), when the caller passes it: a date he named there is his
+    const said = String((a as Raw & { said?: string }).said ?? '')
+    let o = findSession(ev, rows.changes, isDate(a.date) ? a.date : null, today)
+    let dateTo = isDate(a.date_to) ? a.date_to : ''
+    if (op === 'event_move') {
+      // The date he gave is kept (fix round 13: "Owen … Wed 28 Oct 11:00" became Tue 27 Oct when the AI sent date "" or
+      // the usual day, and date_to ""). The AI's new day stands only if his words name it, or name no date at all.
+      const fromGiven = isDate(a.date) && !!o
+      if (!o && isDate(a.date) && !dateTo && isRepeating(ev)) dateTo = a.date   // (the new day sent as date)
+      // (dates named in this message only: not one from something he said earlier)
+      const now = said.split(/\r?\n/).at(-1) ?? ''
+      const named = namedDates(now, today)
+      if (named.length && !(dateTo && dateInWords(dateTo, now, today))) {
+        const from = fromGiven ? o : sessionOn(ev, rows.changes, named, today)
+        const to = named.filter((d) => d !== from?.usualDate && d !== from?.date).at(-1)
+        if (to) { dateTo = to; if (!fromGiven) o = from ?? (isRepeating(ev) ? sessionInWeek(ev, rows.changes, to, today) ?? o : o) }
+      } else if (dateTo && !fromGiven && isRepeating(ev)) o = sessionInWeek(ev, rows.changes, dateTo, today) ?? o
+    }
     const name = `<b>${esc(ev.title)}</b>`
 
     if (op === 'event_cancel') {
@@ -292,10 +351,12 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
 
     // event_move
     if (!o) return { problem: `couldn’t find that session of “${ev.title}”` }
-    const toDate = isDate(a.date_to) ? a.date_to : o.date
+    const toDate = dateTo || o.date
     const start = isTime(a.time) ? a.time : o.start
     if (!start) return { problem: `no new time for “${ev.title}”` }
-    if ((toDate !== o.date || start !== o.start) && !grounded(a.words)) return { problem: `the new day/time for “${ev.title}” wasn’t in your words` }
+    // his words, in any common form ("Wed 28 Oct", "28/10", "28th October", "Wednesday"; "11:00", "11am"), count too
+    const inSaid = said && (toDate === o.date || dateInWords(toDate, said, today)) && (start === o.start || timeInWords(start, said))
+    if ((toDate !== o.date || start !== o.start) && !grounded(a.words) && !inSaid) return { problem: `the new day/time for “${ev.title}” wasn’t in your words` }
     if (toDate < today) return { problem: `that day has passed` }
     const len = o.start && o.end ? minutesOf(o.end) - minutesOf(o.start) : 60
     const end = isTime(a.time_to) ? a.time_to : hm(Math.min(minutesOf(start) + Math.max(len, 15), 23 * 60 + 59))

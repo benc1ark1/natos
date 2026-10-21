@@ -208,18 +208,38 @@ export function nullify(o: Record<string, unknown>): RawOutput {
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 const WEEKDAYS = ['mon(?:day)?', 'tue(?:s|sday)?', 'wed(?:s|nesday)?', 'thu(?:r|rs|rsday)?', 'fri(?:day)?', 'sat(?:urday)?', 'sun(?:day)?']
 
-/** Do his words name this date ("Wed 28 Oct", "28th October", "Oct 28", "28/10", "2026-10-28"; a weekday alone, "Wed",
- *  for the next 7 days)? So a date he gave is kept even when the AI words its date_words differently (fix round 13). */
-export function dateInWords(iso: string, text: string, today: string): boolean {
-  const t = text.toLowerCase()
+const wdOf = (iso: string) => WEEKDAYS[(new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7]
+const MONTH_WORD = `(?:${MONTHS.join('|')})`
+
+/** Do his words name this date with its day number ("Wed 28 Oct", "28th October", "Oct 28", "28/10", "2026-10-28",
+ *  "Wednesday 28th")? (Not a clock time: "Wed 11:00" isn't the 11th.) */
+function namesDay(iso: string, t: string): boolean {
   if (t.includes(iso)) return true
   const d = Number(iso.slice(8, 10)), m = Number(iso.slice(5, 7))
   const day = `0?${d}(?:st|nd|rd|th)?`, mon = `${MONTHS[m - 1]}[a-z]*\\.?`
-  if (new RegExp(`\\b${day}\\s+(?:of\\s+)?${mon}(?![a-z])|\\b${mon}\\s+${day}\\b|\\b0?${d}/0?${m}\\b`).test(t)) return true
+  if (new RegExp(`\\b${day}\\s+(?:of\\s+)?${mon}(?![a-z])|\\b${mon}\\s+${day}\\b(?![:.]\\d)|\\b0?${d}/0?${m}\\b`).test(t)) return true
+  // "Wednesday 28th", "Wed the 28th" (no month: the weekday says which one)
+  return new RegExp(`\\b${wdOf(iso)}\\s+(?:the\\s+)?${day}\\b(?![:.]\\d|\\s*(?:am|pm)\\b|\\s+(?:of\\s+)?${MONTH_WORD}|\\/)`).test(t)
+}
+
+/** Do his words name this date ("Wed 28 Oct", "28th October", "Oct 28", "28/10", "2026-10-28", "Wednesday 28th"; a weekday
+ *  alone, "Wed", for the next 7 days)? So a date he gave is kept even when the AI words its date_words differently (fix round 13). */
+export function dateInWords(iso: string, text: string, today: string): boolean {
+  const t = text.toLowerCase()
+  if (namesDay(iso, t)) return true
   if (iso < today || iso > addDays(today, 7)) return false
-  const wd = WEEKDAYS[(new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7]
   // a weekday alone, with no other date next to it ("Wed", "wednesday"; not "Wed 4 Nov")
-  return new RegExp(`\\b${wd}\\b(?!\\s+(?:the\\s+)?\\d{1,2}(?:st|nd|rd|th)?(?:\\s+(?:of\\s+)?[a-z]{3}|\\/))`).test(t)
+  return new RegExp(`\\b${wdOf(iso)}\\b(?!\\s+(?:the\\s+)?\\d{1,2}(?:st|nd|rd|th)?(?:\\s+(?:of\\s+)?[a-z]{3}|\\/))`).test(t)
+}
+
+/** The dates his words name with a day number ("Owen moved to Wed 28 Oct 11:00" → 2026-10-28), from today on, in date
+ *  order. A weekday alone isn't one (the AI's date_to says which). */
+export function namedDates(text: string, today: string, days = 120): string[] {
+  const t = (text ?? '').toLowerCase()
+  if (!/\d/.test(t)) return []
+  const out: string[] = []
+  for (let i = 0; i <= days; i++) { const iso = addDays(today, i); if (namesDay(iso, t)) out.push(iso) }
+  return out
 }
 
 export function checkProposal(raw: RawOutput, text: string, ctx: CaptureContext): Proposal {
