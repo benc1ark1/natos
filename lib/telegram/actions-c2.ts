@@ -122,7 +122,7 @@ const kvOf = (v: string) => Object.fromEntries((v ?? '').split(';').map((x) => x
  * "Upper; type=upper", or the details in brackets after the name ("Upper (PureGym Swiss Cottage; type=upper)"; a part
  * without "=" there is the place). The name never keeps key=value bits. `inName`: the details were in the name.
  */
-export function eventDetails(value: string): { name: string; kv: Record<string, string>; inName: boolean } {
+export function eventDetails(value: string): { name: string; kv: Record<string, string>; inName: boolean; loosePlace: boolean } {
   const kv: Record<string, string> = {}
   const put = (part: string, loose: 'name' | 'place') => {
     const i = part.indexOf('=')
@@ -139,10 +139,13 @@ export function eventDetails(value: string): { name: string; kv: Record<string, 
   for (const part of split(v)) put(part, 'name')
   if (inName) for (const part of split(m![2])) put(part, 'place')
   // "Upper @ PureGym Swiss Cottage" / "Upper · PureGym Swiss Cottage": the place after the name
+  // (loosePlace: the place came only from that, so it's used only if it is one of his saved places: "Dinner @ Nando's"
+  // never makes or links a place; fix round item 14, second pass)
   const at = (kv.name ?? '').match(/^(.+?)\s+[@·]\s+(.+)$/)
+  const loosePlace = !!at && !kv.place
   if (at && !kv.place) { kv.name = at[1]; kv.place = at[2]; inName = true }
   const name = kv.name ?? kv.title ?? ''
-  return { name: name.replace(/\s+/g, ' ').trim().slice(0, 120), kv, inName }
+  return { name: name.replace(/\s+/g, ' ').trim().slice(0, 120), kv, inName, loosePlace }
 }
 
 /**
@@ -196,7 +199,7 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
     // starts=20:15": arrive=yes = time is when he has to be there (the block starts then, so leave-by is right);
     // starts = when the session itself starts, if he said both (kept in the name, as there's no column for it)
     // (details the AI left in the name, "Upper (PureGym Swiss Cottage; type=upper)", are read as details: fix round 14)
-    const { name, kv, inName } = eventDetails(a.value)
+    const { name, kv, inName, loosePlace } = eventDetails(a.value)
     let title = (inName && kv.place ? `${name} · ${shortPlace(kv.place, [...(rows.places ?? []), ...trainingPlaces(rows.planning)])}` : name).slice(0, 120)
     if (!title) return { problem: 'a new event needs a name' }
     const days = weekdaysIn(a.words)
@@ -212,8 +215,10 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
     const types = trainingTypes(rows.planning)
     const type = kv.type ? findItem(activeTypes(types), kv.type)?.key ?? null : null
     if (kv.type && !type) return { problem: `“${kv.type}” isn’t one of your training types (${activeTypes(types).map((x) => x.label.toLowerCase()).join(', ')})` }
-    const placeName = (kv.place ?? '').slice(0, 80)
-    const place = placeName ? (rows.places ?? []).find((p) => p.name.toLowerCase() === placeName.toLowerCase()) ?? null : null
+    const known = (n: string) => (rows.places ?? []).find((p) => p.name.toLowerCase() === n.toLowerCase()) ?? null
+    // (a place only from "Dinner @ Nando's" in the name: kept in the title, never made as a new place)
+    const placeName = kv.place && !(loosePlace && !known(kv.place.slice(0, 80))) ? kv.place.slice(0, 80) : ''
+    const place = placeName ? known(placeName) : null
     const when = arrive ? `be there ${a.time}, ends ${end}` : `${a.time}–${end}`
     // a place_new in the same card already says it's new
     const listed = ((a as Raw & { placeNews?: string[] }).placeNews ?? []).some((n) => n.toLowerCase() === placeName.toLowerCase())
@@ -327,8 +332,10 @@ export function checkC2(op: C2Op, a: Raw, ref: { kind: string; id: string } | un
       // the usual day, and date_to ""). The AI's new day stands only if his words name it, or name no date at all.
       const fromGiven = isDate(a.date) && !!o
       if (!o && isDate(a.date) && !dateTo && isRepeating(ev)) dateTo = a.date   // (the new day sent as date)
-      // (dates named in this message only: not one from something he said earlier)
-      const now = said.split(/\r?\n/).at(-1) ?? ''
+      // (dates named in this message only: not one from something he said earlier. His message comes on its own, as it
+      // may have more than one line: "Owen moved to\nWed 28 Oct 11:00"; fix round item 13, second pass)
+      const message = (a as Raw & { message?: string }).message
+      const now = typeof message === 'string' ? message : said.split(/\r?\n/).at(-1) ?? ''
       const named = namedDates(now, today)
       if (named.length && !(dateTo && dateInWords(dateTo, now, today))) {
         const from = fromGiven ? o : sessionOn(ev, rows.changes, named, today)

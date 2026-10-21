@@ -222,3 +222,34 @@ test('10: "move upper on Friday to Saturday" (an edit OF the week card) still ch
   assert.equal(all.find((c) => c.id === first.id).status, 'replaced')
   assert.match(last().text, /✏️ <b>Changed<\/b>/)
 })
+
+// ---------------------------------------------------------------------------
+// Third pass: a date and time for a session ON the card edits it (10); his message on more lines (13)
+// ---------------------------------------------------------------------------
+
+test('10 (third pass): "move upper to Sat 24 Oct 3pm" (upper is on the waiting week card; an Upper event is saved too) changes that card: no second week card, not read again', { skip }, async () => {
+  await add('events', { title: 'Upper · PureGym', repeat_days: [6], start_time: '15:00', end_time: '16:30', repeat_from: '2026-09-01', training_type: 'upper' })
+  await weekCardWaiting()
+  const [first] = await cards()
+  const [{ titles }] = await q(`select payload->'blocks' as titles from telegram_pending where id = $1`, [first.id])
+  assert.ok(titles.some((b) => /upper/i.test(b.title)), 'upper is on the card')
+  chat.ai.script(CHAT, brain({ intent: 'plan', reply: 'Moving upper.', plan_week: true, plan_training: '' }))
+  await nat('move upper to Sat 24 Oct 3pm')
+  const all = await cards()
+  assert.equal(all.find((c) => c.id === first.id).status, 'replaced', 'the waiting card is the one changed')
+  assert.equal(all.filter((c) => c.status === 'open').length, 1, 'one week card waiting, not two')
+  assert.match(last().text, /✏️ <b>Changed<\/b>/)
+  assert.equal(chat.ai.byModel(CHAT).length, 2, 'the AI read it once (not again without the card)')
+})
+
+test('13 (third pass): "Owen moved to Wed 28 Oct" + a new line + "11:00", the AI sending date "" and no date_to: Wed 28 Oct kept (not Tue 27 Oct)', { skip }, async () => {
+  await q(`update profiles set planning = $2 where user_id = $1`, [chat.users.owner, JSON.stringify(PLANNING)])
+  const owen = await add('events', { title: 'Owen speed', repeat_days: [2], start_time: '18:30', end_time: '19:30', repeat_from: '2026-09-01' })
+  chat.ai.script(CHAT, (body) => brain({ intent: 'instruction', reply: 'Moving it.', actions: [act({ ref: refIn(body, 'Owen speed') ?? '', date: '', date_to: '', time: '11:00', words: 'Wednesday 28 October' })] }))
+  await nat('Owen moved to Wed 28 Oct\n11:00')
+  show(last())
+  assert.match(last().text, /Owen speed<\/b>: Tue 27 Oct 18:30–19:30 → Wed 28 Oct 11:00–12:00/)
+  await tapOn('Apply')
+  const [ex] = await q(`select on_date::text, new_date::text from event_exceptions where event_id = $1`, [owen.id])
+  assert.deepEqual(ex, { on_date: '2026-10-27', new_date: '2026-10-28' })
+})

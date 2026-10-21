@@ -207,11 +207,15 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   // to saved records ("Owen moved to Wed 28 Oct 11:00", "physics homework is due Friday now"), a 'done' report, a plan
   // for another week or a "correction" that isn't about the plan is its own message (fix round, item 10: before, every
   // plan / correction / instruction went into the waiting week card). The week card re-fits after that change's ✅.
+  // (his saved tasks, events and tests: a record he names that isn't on the card makes a date / 'due' / 'moved' his own change)
+  // (events from his Google calendars too, which have no ref: "Owen")
+  const records = [...[...ctx.refs.values()].filter((r) => r.kind === 'task' || r.kind === 'event' || r.kind === 'goal').map((r) => r.title),
+    ...data.events.filter((e) => !e.archived_at).map((e) => e.title)]
   const ownPlan = !ownMessage && card?.kind === 'plan' && card.status !== 'editing' && !(card.payload as { add?: boolean }).add
-    && ['plan', 'correction', 'instruction'].includes(res.decision.intent) && !editsPlan(message, res.decision, card, today)
+    && ['plan', 'correction', 'instruction'].includes(res.decision.intent) && !editsPlan(message, res.decision, card, today, records)
   // (a record change the AI labelled 'plan', or an instruction it found no change in, is read again without the card too)
   const reread = ownPlan && (res.decision.intent === 'correction'
-    || (namesRecordChange(message, today) && !(res.decision.intent === 'instruction' && (res.decision.actions.length || res.decision.asks.length))))
+    || (namesRecordChange(message, today, records, card) && !(res.decision.intent === 'instruction' && (res.decision.actions.length || res.decision.asks.length))))
   if (ownMessage || reread) {
     const again = await ask(null)
     if (again.ok) { res = again; card = null }
@@ -278,11 +282,11 @@ async function proposeChanges(sb: SupabaseClient, chatId: number, message: strin
   const said = [...history.filter((t) => t.role === 'nat').map((t) => t.text), message].join('\n')
   const optionActions = d.asks.flatMap((q) => q.options.flatMap((o) => o.actions))
   const rows = await loadRows(sb, [...d.actions, ...optionActions], ctx)
-  const { actions, problems } = checkActions(d.actions, ctx, rows, said, todayISO())
+  const { actions, problems } = checkActions(d.actions, ctx, rows, said, todayISO(), message)
   // a quick-tap question per unclear part: each answer's changes are checked now, like the rest (lib/telegram/cards.ts)
   const asks: Ask[] = d.asks.map((q) => ({
     question: q.question,
-    options: q.options.map((o) => ({ label: o.label, actions: checkActions([...d.actions, ...o.actions], ctx, rows, said, todayISO()).actions.slice(actions.length) }))
+    options: q.options.map((o) => ({ label: o.label, actions: checkActions([...d.actions, ...o.actions], ctx, rows, said, todayISO(), message).actions.slice(actions.length) }))
       .filter((o) => o.actions.length),
   })).filter((q) => q.options.length)
   if (!actions.length && asks.length) {
@@ -365,19 +369,38 @@ export function otherWeek(message: string, card: Pick<Pending, 'payload'>, today
   return false
 }
 
-// A change to a saved record, not to a plan card: a task's due date or a new task ("add physics homework due Friday"),
-// an event that moved or was cancelled, a standing rule or setting ("from now on")
-const RECORD_TASK = /\b(?:due|deadline|hand(?:ed)?\s+in)\b|^(?:add|new|create)\b.*\b(?:task|homework|hw|test|exam|essay|coursework|reminder)\b|\bremind me\b/i
+// A change to a saved record, not to a plan card: a new task ("add physics homework due Friday"), a standing rule or
+// setting ("from now on"): always. A due date, a move or a cancellation, or a new date and time: only when it names a
+// saved record that isn't on the card (fix round item 10, second pass: "move upper to Sat 31 Oct 3pm" edits the card)
+const NEW_TASK = /^(?:add|new|create)\b.*\b(?:task|homework|hw|test|exam|essay|coursework|reminder)\b|\bremind me\b/i
+const RECORD_DUE = /\b(?:due|deadline|hand(?:ed)?\s+in)\b/i
 const RECORD_EVENT = /\b(?:moved|cancelled|canceled|rescheduled|postponed|called off)\b/i
 const RECORD_SETTING = /\b(?:from now on|by default|settings?)\b/i
 
+/** The sessions and blocks on a plan card (their titles). */
+function cardTitles(card: Pick<Pending, 'payload'> | null | undefined): string[] {
+  const p = (card?.payload ?? {}) as { blocks?: { title?: string }[]; unplaced?: { title?: string }[]; yourWeek?: { training?: { needs?: { title?: string }[] } } }
+  return [...(p.blocks ?? []), ...(p.unplaced ?? []), ...(p.yourWeek?.training?.needs ?? [])].map((b) => b.title ?? '').filter(Boolean)
+}
+
+/** Does his message name one of these saved records (a task, event or test title) by a word that isn't a session or
+ *  block on the card ("Owen" the calendar event: yes; "upper", a session on the card: no)? */
+export function namesRecord(message: string, records: string[], card?: Pick<Pending, 'payload'> | null): boolean {
+  const onCard = wordsOf(cardTitles(card).join(' '))
+  const said = wordsOf(message)
+  return records.some((r) => [...wordsOf(r)].some((w) => !onCard.has(w) && said.has(w)))
+}
+
 /** Does his message name a change to a saved task, event or setting ("Owen moved to Wed 28 Oct 11:00", "add physics
- *  homework due Friday")? Then it's its own message even while a plan card waits, whatever the AI called it. */
-export function namesRecordChange(message: string, today: string): boolean {
+ *  homework due Friday")? Then it's its own message even while a plan card waits, whatever the AI called it.
+ *  `records`: his saved tasks', events' and tests' titles; `card`: the plan card waiting. */
+export function namesRecordChange(message: string, today: string, records: string[] = [], card?: Pick<Pending, 'payload'> | null): boolean {
   const m = message.trim()
-  if (RECORD_TASK.test(m) || RECORD_EVENT.test(m) || RECORD_SETTING.test(m)) return true
+  if (NEW_TASK.test(m) || RECORD_SETTING.test(m)) return true
   // a calendar date with a clock time ("Owen speed Wed 28 Oct 11:00"): an event's new day and time
-  return namedDates(m, today).length > 0 && /\b\d{1,2}(?:[:.]\d{2}|\s*(?:am|pm))\b/i.test(m)
+  const dateTime = namedDates(m, today).length > 0 && /\b\d{1,2}(?:[:.]\d{2}|\s*(?:am|pm))\b/i.test(m)
+  if (!(RECORD_DUE.test(m) || RECORD_EVENT.test(m) || dateTime)) return false
+  return namesRecord(m, records, card)
 }
 
 /**
@@ -386,9 +409,9 @@ export function namesRecordChange(message: string, today: string): boolean {
  * it's for another week). Changes to saved records (even ones the AI labelled 'plan'), 'done' reports and new items
  * never are; a "correction" is only when it reads like a change to a plan or names a session on the card.
  */
-export function editsPlan(message: string, d: Pick<Decision, 'intent' | 'actions' | 'asks'>, card: Pick<Pending, 'payload'>, today: string): boolean {
+export function editsPlan(message: string, d: Pick<Decision, 'intent' | 'actions' | 'asks'>, card: Pick<Pending, 'payload'>, today: string, records: string[] = []): boolean {
   if (looksDone(message)) return false
-  if (namesRecordChange(message, today)) return false
+  if (namesRecordChange(message, today, records, card)) return false
   if (d.intent === 'plan') return !otherWeek(message, card, today)
   if (d.intent === 'instruction') return !d.actions.length && !d.asks.length
   if (d.intent !== 'correction') return false

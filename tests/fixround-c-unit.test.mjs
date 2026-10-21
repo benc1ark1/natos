@@ -9,7 +9,8 @@ import { editsPlan, namesRecordChange, otherWeek } from '../lib/telegram/convers
 import { checkProposal, dateInWords, namedDates, nullify } from '../lib/capture/server.ts'
 import { checkC2, eventDetails, shortPlace, timeInWords } from '../lib/telegram/actions-c2.ts'
 import { DEFAULT_PLACES } from '../lib/setup.ts'
-import { EVENTS, NEXT, PLANNING, SCHOOL, THIS, TODAY, day, ev } from './support/nat-real.mjs'
+import { checkActions } from '../lib/telegram/actions.ts'
+import { EVENTS, GOALS, NEXT, PLANNING, SCHOOL, TASKS, THIS, TODAY, day, ev } from './support/nat-real.mjs'
 
 // ---------------------------------------------------------------------------
 // 10: a message while a Your week card waits
@@ -68,6 +69,8 @@ test('10: "plan next week" while this week’s card waits is a plan for next wee
 
 // his Owen speed session (term: Tue 18:30); the sorter's answer for an event change, with date words in its own wording
 const OWEN = ev({ id: 'owen-speed', title: 'Owen speed', repeat_days: [2], start_time: '18:30', end_time: '19:30', training_type: 'sprint' })
+// his saved records' titles (open tasks, events, tests), as the bot reads them while a card waits; an Upper gym event too
+const RECORDS = [...TASKS.filter((t) => !t.archived_at).map((t) => t.title), ...[...EVENTS, OWEN].map((e) => e.title), ...GOALS.map((x) => x.title), 'Upper · PureGym']
 const capCtx = {
   today: TODAY, now: '18:00', subjects: [], projects: [], targets: [], events: [...EVENTS, OWEN], changes: [], tests: [], facts: [],
   openTasks: [], reminders: [], resources: [], loggedToday: [], planning: PLANNING, study: { stages: [], topics: [], progress: [] },
@@ -144,7 +147,7 @@ test('14: a weekly session with its details in the name, and a rename: clean too
 })
 
 test('14: the pieces: details out of the name; a place’s short name leaves its area out', () => {
-  assert.deepEqual(eventDetails('Upper (PureGym Swiss Cottage; type=upper)'), { name: 'Upper', kv: { name: 'Upper', place: 'PureGym Swiss Cottage', type: 'upper' }, inName: true })
+  assert.deepEqual(eventDetails('Upper (PureGym Swiss Cottage; type=upper)'), { name: 'Upper', kv: { name: 'Upper', place: 'PureGym Swiss Cottage', type: 'upper' }, inName: true, loosePlace: false })
   assert.equal(eventDetails('Owen training').name, 'Owen training')
   assert.equal(shortPlace('PureGym Swiss Cottage', DEFAULT_PLACES), 'PureGym')
   assert.equal(shortPlace('School gym', DEFAULT_PLACES), 'School gym')
@@ -199,17 +202,19 @@ test('13: the pieces: dates named with a day number, and clock times in his word
 test('10: a record change the AI labels “plan” while the week card waits is its own message; an edit OF the card still edits it', () => {
   for (const mon of [THIS, NEXT, SCHOOL]) {
     const card = weekCard(mon)
-    assert.equal(editsPlan('Owen moved to Wed 28 Oct 11:00', decision('plan'), card, TODAY), false, mon)
-    assert.equal(editsPlan('add physics homework due Friday', decision('plan'), card, TODAY), false, mon)
-    assert.equal(editsPlan('add physics homework due Friday', decision('correction'), card, TODAY), false, '(it starts with “add”, but it’s a task)')
+    assert.equal(editsPlan('Owen moved to Wed 28 Oct 11:00', decision('plan'), card, TODAY, RECORDS), false, mon)
+    assert.equal(editsPlan('add physics homework due Friday', decision('plan'), card, TODAY, RECORDS), false, mon)
+    assert.equal(editsPlan('add physics homework due Friday', decision('correction'), card, TODAY, RECORDS), false, '(it starts with “add”, but it’s a task)')
     for (const m of ['move upper on Friday to Saturday', 'less study Friday', 'redo', 'drop the FM block on Tuesday', 'swap Wednesday and Thursday'])
-      assert.equal(editsPlan(m, decision('plan'), card, TODAY), true, m)
+      assert.equal(editsPlan(m, decision('plan'), card, TODAY, RECORDS), true, m)
   }
-  assert.equal(namesRecordChange('Owen moved to Wed 28 Oct 11:00', TODAY), true)
-  assert.equal(namesRecordChange('Owen speed Wed 28 Oct 11:00', TODAY), true, 'a date and a time: an event’s new day')
-  assert.equal(namesRecordChange('physics homework is due Friday now', TODAY), true)
+  // (his saved records and the card waiting: a date / 'due' / 'moved' counts only for a record not on the card)
+  const card = weekCard(THIS)
+  assert.equal(namesRecordChange('Owen moved to Wed 28 Oct 11:00', TODAY, RECORDS, card), true)
+  assert.equal(namesRecordChange('Owen speed Wed 28 Oct 11:00', TODAY, RECORDS, card), true, 'a date and a time: an event’s new day')
+  assert.equal(namesRecordChange('physics homework is due Friday now', TODAY, RECORDS, card), true)
   assert.equal(namesRecordChange('nothing after 10pm from now on', TODAY), true)
-  for (const m of ['move upper on Friday to Saturday', 'upper Sat at PureGym', 'less study Friday', 'start at 12', 'add the gym', 'redo']) assert.equal(namesRecordChange(m, TODAY), false, m)
+  for (const m of ['move upper on Friday to Saturday', 'upper Sat at PureGym', 'less study Friday', 'start at 12', 'add the gym', 'redo']) assert.equal(namesRecordChange(m, TODAY, RECORDS, card), false, m)
 })
 
 test('14: “Upper · PureGym” whichever list has the place first (his places with another address, or no address), and whatever shape the AI sent', () => {
@@ -233,4 +238,91 @@ test('14: “Upper · PureGym” whichever list has the place first (his places 
   }
   const weekly = checkC2('event_weekly', { op: 'event_weekly', value: 'Upper (PureGym Swiss Cottage; type=upper)', date: '', date_to: '', time: '15:00', time_to: '16:30', number: 0, words: 'every Saturday' }, undefined, r, () => true, TODAY).action
   assert.equal(weekly.title, 'Upper · PureGym')
+})
+
+// ---------------------------------------------------------------------------
+// Third pass: a date / 'due' / 'moved' is a record change only for a record not on the card (10); his message on its
+// own for an event move (13); a place only from "X @ Y" (14)
+// ---------------------------------------------------------------------------
+
+/** Your week with his physics and English blocks on it too (the real card has his study blocks). */
+const studyCard = (mon) => {
+  const c = weekCard(mon)
+  c.payload.blocks.push({ title: 'Physics: SHM booklet', kind: 'focus', date: day(mon, 2) }, { title: 'English essay: Macbeth', kind: 'focus', date: day(mon, 3) })
+  return c
+}
+const RECORDS_EN = [...RECORDS, 'English essay: Macbeth']
+const CARD_EDITS = ['move upper to Sat 31 Oct 3pm', 'put upper on Sat 31 Oct at 15:00', 'swap upper to 24 Oct 10am',
+  'no physics tonight, it is not due till Friday', 'more English Thursday, essay due Friday', 'I moved upper to saturday']
+
+test('10 (third pass): a session or block ON the card with a date+time / “due” / “moved” edits the waiting week card (no second week card)', () => {
+  for (const mon of [THIS, NEXT, SCHOOL]) {
+    const card = studyCard(mon)
+    for (const m of CARD_EDITS) {
+      assert.equal(namesRecordChange(m, TODAY, RECORDS_EN, card), false, `${m} (${mon})`)
+      for (const intent of ['plan', 'correction']) assert.equal(editsPlan(m, decision(intent), card, TODAY, RECORDS_EN), true, `${m}: ${intent} (${mon})`)
+    }
+  }
+})
+
+test('10 (third pass): a saved record NOT on the card (Owen, the calendar event), or a new task, is still its own card', () => {
+  for (const mon of [THIS, NEXT, SCHOOL]) {
+    const card = studyCard(mon)
+    for (const m of ['Owen moved to Wed 28 Oct 11:00', 'add physics homework due Friday']) {
+      assert.equal(namesRecordChange(m, TODAY, RECORDS_EN, card), true, `${m} (${mon})`)
+      for (const intent of ['plan', 'correction']) assert.equal(editsPlan(m, decision(intent), card, TODAY, RECORDS_EN), false, `${m}: ${intent} (${mon})`)
+    }
+    // the same words about a task that is NOT on this card: its own change
+    assert.equal(namesRecordChange('Vlad mechanics questions are due Friday now', TODAY, RECORDS_EN, card), true)
+    assert.equal(namesRecordChange('Chemistry corrections due Friday', TODAY, RECORDS_EN, card), true)
+  }
+  // physics with no physics block on the card: the Physics task (and his Physics lessons) are records, so its own
+  assert.equal(namesRecordChange('physics is not due till Friday', TODAY, RECORDS, weekCard(THIS)), true)
+})
+
+test('13 (third pass): his message on more lines (“Owen moved to Wed 28 Oct”, a new line, “11:00”) keeps Wed 28 Oct; a date he said earlier isn’t used', () => {
+  const rowsO = { events: new Map([[OWEN.id, OWEN]]), changes: [], goals: new Map(), places: [], planning: PLANNING }
+  const ctxO = { today: TODAY, weekStart: THIS, snapshot: '', refs: new Map([['E1', { kind: 'event', id: OWEN.id, title: OWEN.title, status: null, deadline: null }]]) }
+  const raw = { op: 'event_move', ref: 'E1', value: '', date: '', date_to: '', time: '11:00', time_to: '', number: 0, words: 'Wednesday 28 October' }
+  for (const message of ['Owen moved to Wed 28 Oct\n11:00', 'Owen moved to\nWed 28 Oct\n11:00', 'Owen moved to\nWed 28 Oct 11:00', 'Owen moved to Wed 28 Oct 11:00\nthanks']) {
+    // what converse sends: his last 30 minutes and this message, joined with new lines; and this message on its own
+    const said = `what’s on Thursday?\n${message}`
+    const r = checkActions([raw], ctxO, rowsO, said, TODAY, message)
+    assert.equal(r.actions[0]?.patch.new_date, '2026-10-28', `${JSON.stringify(message)}: ${r.problems.join(' | ')}`)
+    assert.equal(r.actions[0].usualDate, '2026-10-27')
+    // checkC2 directly, with the message passed apart from `said`
+    const c = owenMove(said, { message })
+    assert.equal(c.action?.patch.new_date, '2026-10-28', `${JSON.stringify(message)}: ${c.problem}`)
+  }
+  // a date in something he said earlier (Thu 29 Oct) isn't this message's date
+  const r = checkActions([{ ...raw, words: '' }], ctxO, rowsO, 'Owen Thu 29 Oct 11:00?\nOwen moved to Wed 28 Oct\n11:00', TODAY, 'Owen moved to Wed 28 Oct\n11:00')
+  assert.equal(r.actions[0]?.patch.new_date, '2026-10-28', r.problems.join(' | '))
+})
+
+test('14 (third pass): “Dinner @ Nando’s” (a place he hasn’t saved) never makes or links a place; the title can stay “Dinner · Nando’s”', () => {
+  const mine = [{ id: 'pl-pg', name: 'PureGym Swiss Cottage', address: 'Finchley Road, London NW3 6LU', lat: null, lng: null, is_home: false, archived_at: null },
+    { id: 'pl-nandos-camden', name: 'Nando’s Camden', address: 'Camden High Street, London', lat: null, lng: null, is_home: false, archived_at: null }]
+  const r = { ...rows, places: mine }
+  for (const value of ['Dinner @ Nando\'s', 'Dinner · Nando\'s', 'Dinner @ Nando’s']) {
+    for (const mon of [THIS, NEXT, SCHOOL]) {
+      const one = checkC2('event_new', { op: 'event_new', value, date: day(mon, 4), date_to: '', time: '19:00', time_to: '', number: 0, words: 'Fri' }, undefined, r, () => true, TODAY).action
+      assert.ok(one, value)
+      assert.match(one.title, /^Dinner · Nando/)
+      assert.equal(one.patch.place_id, undefined, `${value}: no place linked`)
+      assert.equal(one.patch.new_place, undefined)
+    }
+    const weekly = checkC2('event_weekly', { op: 'event_weekly', value, date: '', date_to: '', time: '19:00', time_to: '', number: 0, words: 'every Friday' }, undefined, r, () => true, TODAY).action
+    assert.ok(weekly, value)
+    assert.match(weekly.title, /^Dinner · Nando/)
+    assert.equal(weekly.patch.place_id, undefined, `${value}: no place linked`)
+    assert.equal(weekly.patch.new_place, undefined, `${value}: no place made`)
+    assert.doesNotMatch(weekly.line, /new place/)
+  }
+  assert.equal(eventDetails('Dinner @ Nando\'s').loosePlace, true)
+  // a place he HAS saved still links ("Upper @ PureGym Swiss Cottage"); one he names as a place (place=…) is still made
+  const gym = checkC2('event_weekly', { op: 'event_weekly', value: 'Upper @ PureGym Swiss Cottage', date: '', date_to: '', time: '15:00', time_to: '16:30', number: 0, words: 'every Saturday' }, undefined, r, () => true, TODAY).action
+  assert.equal(gym.patch.place_id, 'pl-pg')
+  assert.equal(gym.title, 'Upper · PureGym')
+  const named = checkC2('event_weekly', { op: 'event_weekly', value: 'name=Dinner; place=Nando\'s Finchley', date: '', date_to: '', time: '19:00', time_to: '', number: 0, words: 'every Friday' }, undefined, r, () => true, TODAY).action
+  assert.equal(named.patch.new_place, 'Nando\'s Finchley')
 })
