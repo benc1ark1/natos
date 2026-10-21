@@ -8,7 +8,7 @@ import { CheckIcon, ErrorBox, Loading, type ShowToast } from '../ui'
 
 type Item = {
   key: string; at: string | null; end: string | null; title: string; open: string; url: string | null; minutes: number; why: string
-  kind: 'study' | 'task' | 'training'; isDone: boolean; blockIds: string[]; taskId: string | null; rolledFrom: string | null; shortened?: boolean
+  kind: 'study' | 'task' | 'training'; isDone: boolean; blockIds: string[]; taskId: string | null; rolledFrom: string | null; shortened?: boolean; fixed?: boolean
 }
 type Hidden = { key: string; title: string; open: string; minutes: number; why: string }
 type Plan = { date: string; mode: 'half_term' | 'school'; items: Item[]; fixed: string; more: number; hidden: Hidden[]; noTime: boolean; note: string | null }
@@ -84,8 +84,8 @@ export default function TodayView({ toast, onChanged }: { toast: ShowToast; onCh
                     </button>
                     <div className="tbody">
                       <div className="ttop">
-                        {/* item 18: an ordered list with minutes; only a training session shows its clock time */}
-                        <span className="ttime mono">{i + 1}.{it.kind === 'training' && it.at ? ` ${it.at}` : ''}</span>
+                        {/* item 18: an ordered list with minutes; only a fixed training session (his set time) shows its clock time */}
+                        <span className="ttime mono">{i + 1}.{it.kind === 'training' && it.fixed && it.at ? ` ${it.at}` : ''}</span>
                         <span className="tkind">{KIND[it.kind]}</span>
                         <span className="tdur">{mins(it.minutes)}</span>
                       </div>

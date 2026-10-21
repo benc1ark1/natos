@@ -59,7 +59,7 @@ async function savedList(date, rows) {
   return out
 }
 
-test('the morning message: once at 07:30, Today numbered with minutes (training with its time), what to open and a tap each, plus the fixed line; it IS the pinned Today', { skip }, async () => {
+test('the morning message: once at 07:30, Today numbered with minutes (a session the planner placed too: no clock time), what to open and a tap each, plus the fixed line; it IS the pinned Today', { skip }, async () => {
   await setPlanning(BASE)
   const { hw, form } = await schoolDay()
   const upper = await add('weekly_targets', { name: 'Upper', target_count: 2 })
@@ -74,7 +74,8 @@ test('the morning message: once at 07:30, Today numbered with minutes (training 
   show(m)
   assert.match(m.text, /^📌 <b>Today · \w+day, \d+ \w+<\/b>\n<i>🏫 School 08:45–16:00 · ⚽ Football training 19:45<\/i>\n/)
   assert.match(m.text, /\n\d\. 📌 Physics homework: waves worksheet <i>· 45m<\/i>\n {5}↳ Worksheet 3, questions 1–8/, 'its place in the list, how long and exactly what to open (fix round 18: no clock time)')
-  assert.match(m.text, /\n\d\. <b>16:30<\/b> 🏋️ Upper @ PureGym <i>· 1h 30m<\/i>/, 'training as one item, with its time')
+  assert.match(m.text, /\n\d\. 🏋️ Upper @ PureGym <i>· 1h 30m<\/i>/, 'training as one item, with its minutes (fix round 18: the planner chose 16:30, not a set time)')
+  assert.doesNotMatch(m.text, /16:30/)
   assert.match(m.text, /Email the trip form/)
   assert.doesNotMatch(m.text, /Your day|Don’t forget|Targets left|Study next/, 'nothing else')
   const taps = buttons(m)
@@ -446,8 +447,9 @@ test('fix 7: "what next?" is the first thing on Today not done yet, exactly what
   await chat.nat('what next?')
   const m = chat.tg.sent().at(-1)
   show(m)
-  assert.match(m.text, /^👉 <b>17:00 Second thing<\/b> · 30 min\n📖 Bicen Pure → AS: Logs/)
-  assert.match(m.text, /Then: 18:00 Third thing/)
+  // fix round 18: no clock time on study (only fixed sessions have one)
+  assert.match(m.text, /^👉 <b>Second thing<\/b> · 30 min\n📖 Bicen Pure → AS: Logs/)
+  assert.match(m.text, /Then: Third thing/)
   chat.noSurprises()
 })
 

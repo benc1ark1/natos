@@ -227,7 +227,9 @@ test('O6: the 07:00 brief and the pinned Today show the day in time order (routi
     const brief = chat.tg.sent().find((m) => m.text.startsWith('📌 <b>Today'))
     show(brief)
     assert.match(brief.text, /<i>🏫 School 08:45–16:00<\/i>/)
-    assert.match(brief.text, /<b>16:25<\/b> 🏋️ Upper @ PureGym Swiss Cottage <i>· 1h<\/i>\n {5}↳ leave school 16:10 \(15 min\)/)
+    // fix round 18: the planner chose 16:25 (no set time for upper), so on Today it's minutes only, no leave-by line
+    assert.match(brief.text, /\n\d\. 🏋️ Upper @ PureGym Swiss Cottage <i>· 1h<\/i>\n/)
+    assert.doesNotMatch(brief.text, /16:25|leave school/)
     assert.match(brief.text, /\n\d\. 📌 Physics homework <i>· 45m<\/i>/, 'fix round 18: study numbered, no clock time')
     assert.deepEqual(chat.tg.of('pinChatMessage').map((c) => c.body.message_id), [brief.message_id], 'the morning message is the pinned Today')
     await nat('/brief full')
@@ -239,13 +241,13 @@ test('O6: the 07:00 brief and the pinned Today show the day in time order (routi
     assert.deepEqual([...at].sort((a, b) => a - b), at, 'in time order')
     assert.match(full.text, /16:25 🏋️ Upper @ PureGym Swiss Cottage <i>60m<\/i> <i>\(leave school 16:10, 15 min\)<\/i>/)
     // tick Upper on the morning message: done, logged toward Upper; the pinned Today shows it ticked
-    await tapOn(brief, '☐ 16:25 Upper')
+    await tapOn(brief, '☐ Upper')
     assert.equal((await q(`select status from plan_blocks where title like 'Upper%'`))[0].status, 'done')
     assert.equal((await q(`select count(*)::int n from target_logs where target_id = $1`, [upper.id]))[0].n, 1)
-    assert.match(chat.tg.of('editMessageText').at(-1).body.text, /✅ <s>\d\. 16:25 🏋️ Upper/)
-    assert.ok(JSON.stringify(chat.tg.of('editMessageText').at(-1).body.reply_markup).includes('✅ 16:25 Upper'), 'its button shows the tick')
+    assert.match(chat.tg.of('editMessageText').at(-1).body.text, /✅ <s>\d\. 🏋️ Upper/)
+    assert.ok(JSON.stringify(chat.tg.of('editMessageText').at(-1).body.reply_markup).includes('✅ Upper'), 'its button shows the tick')
     // untick: back to planned, the log goes
-    await tapOn({ ...brief, reply_markup: chat.tg.of('editMessageText').at(-1).body.reply_markup }, '16:25 Upper')
+    await tapOn({ ...brief, reply_markup: chat.tg.of('editMessageText').at(-1).body.reply_markup }, 'Upper')
     assert.equal((await q(`select status from plan_blocks where title like 'Upper%'`))[0].status, 'planned')
     assert.equal((await q(`select count(*)::int n from target_logs where target_id = $1`, [upper.id]))[0].n, 0)
   } finally { setClock(null) }

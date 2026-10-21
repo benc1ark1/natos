@@ -68,3 +68,45 @@ test('18 · /today on Wed 21 Oct: a numbered list with minutes, no clock times o
   assert.deepEqual(texts.slice(0, 2), ['☐ ACT reading passage set', '☐ ACT grammar: punctuation drill'])
   chat.noSurprises()
 })
+
+// Item 18 (follow-up): only FIXED things show a time. His half-term set time (speed Wed 11:00) keeps its clock time and
+// leave-by line; a session the planner placed itself (upper 12:30, from his applied week) shows its minutes like study.
+async function worldWithTimes() {
+  await world()
+  await q(`update profiles set planning = planning || $2::jsonb where user_id = $1`, [chat.users.owner, JSON.stringify({
+    owenDays: PLANNING.owenDays, sessionTimes: PLANNING.sessionTimes, holidayOwenDays: PLANNING.holidayOwenDays, holidaySessionTimes: PLANNING.holidaySessionTimes })])
+}
+
+test('18 · /today and "what next?" on Wed 21 Oct: the planner’s upper 12:30 has its minutes, no clock time and no leave-by line', { skip }, async () => {
+  await worldWithTimes()
+  const { autoPlanId } = await import('../lib/today/data.ts')
+  await block(autoPlanId(TODAY), TODAY, '10:00', '10:40', 'ACT reading passage set', { source: 'auto' })
+  await block(randomUUID(), TODAY, '12:30', '13:30', 'Upper @ PureGym', { kind: 'training' })   // his applied week: the planner chose 12:30
+  await nat('/today')
+  const m = chat.tg.sent().filter((x) => x.text.startsWith('📌 <b>Today')).at(-1)
+  show(m)
+  assert.match(m.text, /\n1\. 📚 ACT reading passage set <i>· 40m<\/i>\n(?: {5}↳.*\n)?2\. 🏋️ Upper @ PureGym <i>· 1h<\/i>/)
+  assert.doesNotMatch(m.text, /12:30|leave/, 'no clock time and no leave-by line for a session the planner placed')
+  const texts = (m.reply_markup?.inline_keyboard ?? []).flat().map((b) => b.text)
+  assert.deepEqual(texts.slice(0, 2), ['☐ ACT reading passage set', '☐ Upper @ PureGym'])
+  await nat('what next?')
+  const next = chat.last().text
+  show({ text: next })
+  assert.match(next, /👉 <b>ACT reading passage set<\/b>/)
+  assert.match(next, /Then: Upper @ PureGym/)
+  assert.doesNotMatch(next, /12:30/)
+  chat.noSurprises()
+})
+
+test('18 · /today and "what next?" on Wed 21 Oct: Owen’s speed at his half-term time 11:00 keeps its clock time and leave-by line', { skip }, async () => {
+  await worldWithTimes()
+  await block(randomUUID(), TODAY, '11:00', '12:00', 'Speed + circuits @ Owen', { kind: 'training' })
+  await nat('/today')
+  const m = chat.tg.sent().filter((x) => x.text.startsWith('📌 <b>Today')).at(-1)
+  show(m)
+  assert.match(m.text, /\n1\. <b>11:00<\/b> 🏋️ Speed \+ circuits @ Owen <i>· 1h<\/i>\n {5}↳ leave \d\d:\d\d/)
+  assert.ok((m.reply_markup?.inline_keyboard ?? []).flat().some((b) => b.text === '☐ 11:00 Speed + circuits @ Owen'))
+  await nat('what next?')
+  assert.match(chat.last().text, /👉 <b>11:00 Speed \+ circuits @ Owen<\/b>/)
+  chat.noSurprises()
+})

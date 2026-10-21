@@ -18,6 +18,7 @@ import { esc } from './api'
 import { loadDay, type DayData } from './brief'
 import { boundsOf } from '../setup'
 import { schoolDays, withSchool } from '../school'
+import { isFixedSession } from '../today/fixed'
 import type { Ref } from './turns'
 
 export const VIEWS = ['inbox', 'week', 'coming', 'free', 'postponed', 'project', 'today', 'load', 'gaps', 'savings', 'maths', 'mathsnext'] as const
@@ -122,9 +123,12 @@ const taskLine = (t: Task, today: string) => {
   return `• ${t.is_key ? '⭐ ' : ''}${t.importance === 'must' && deadlineOf(t) ? `<b>${esc(t.title)}</b>` : esc(t.title)}${bits.length ? ` <i>(${esc(bits.join(' · '))})</i>` : ''}`
 }
 const mins = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`)
-/** A planned block: training at its time (he has to be there); study and tasks with their minutes, in order (item 18). */
-const blockLine = (b: { start_time: string; end_time: string; title: string; kind: string; status?: string }) =>
-  `${b.status === 'done' ? '✅ ' : ''}${b.kind === 'training' ? `🏋️ ${b.start_time}–${b.end_time} ${esc(b.title)}` : `📚 ${esc(b.title)} <i>· ${mins(minutesOf(b.end_time) - minutesOf(b.start_time))}</i>`}`
+/** A planned block: training at its time (he has to be there); study and tasks with their minutes, in order (item 18).
+ *  `fixed` (Today): is this training at his set time? A session the planner placed shows its minutes, like study. */
+const blockLine = (b: { start_time: string; end_time: string; title: string; kind: string; status?: string }, fixed: (b: { start_time: string; title: string }) => boolean = () => true) => {
+  const m = ` <i>· ${mins(minutesOf(b.end_time) - minutesOf(b.start_time))}</i>`
+  return `${b.status === 'done' ? '✅ ' : ''}${b.kind === 'training' ? (fixed(b) ? `🏋️ ${b.start_time}–${b.end_time} ${esc(b.title)}` : `🏋️ ${esc(b.title)}${m}`) : `📚 ${esc(b.title)}${m}`}`
+}
 const refsOf = (ts: Task[]): Ref[] => ts.map((t) => ({ kind: 'task', id: t.id, title: t.title }))
 const live = (d: ViewData) => d.tasks.filter((t) => t.status !== 'completed' && !t.archived_at)
 
@@ -260,14 +264,16 @@ export function renderToday(d: ViewData): Rendered {
   const [f] = freeDays(d.events, d.changes, d.today, d.today, d.settings, d.today, minutesOf(now), d.travel)
   const lines = [`📍 <b>Today</b> (${now})`]
   const plan = (d.plan ?? []).filter((b) => b.end_time > now)
+  // item 18: only a fixed session (his set time) keeps its clock time
+  const fixed = (b: { start_time: string; title: string }) => isFixedSession(d.planning, d.today, b.title, b.start_time)
   // school as one line, with what's left of its free periods, break and lunch (and anything planned in them)
   const booked = withSchool(inSchool, [
     ...left.map((o) => ({ at: o.start ?? '', line: `${esc(timeRange(o) || 'all day')} ${esc(o.event.title)}` })),
-    ...(inSchool ? plan.filter((b) => b.start_time < inSchool.end).map((b) => ({ at: b.start_time, line: blockLine(b) })) : []),
+    ...(inSchool ? plan.filter((b) => b.start_time < inSchool.end).map((b) => ({ at: b.start_time, line: blockLine(b, fixed) })) : []),
   ], '  ', inSchool?.windows.filter((w) => w.end > now)).map((l) => (l.startsWith(' ') ? l : `• ${l}`))
   const later = inSchool ? plan.filter((b) => b.start_time >= inSchool.end) : plan
   lines.push(booked.length ? booked.join('\n') : occ.length ? '• Nothing else booked' : '• Nothing booked')
-  if (later.length) lines.push('', '🗓 <b>Plan</b>', ...later.map((b, i) => `${i + 1}. ${blockLine(b)}`))
+  if (later.length) lines.push('', '🗓 <b>Plan</b>', ...later.map((b, i) => `${i + 1}. ${blockLine(b, fixed)}`))
   if (todo.length) lines.push('', '✅ <b>To do</b>', ...todo.map((t) => taskLine(t, d.today)))
   const [free, night] = slotsText(f, d.settings).split(' · school night: ')
   lines.push('', `🕒 <b>Free</b>: ${esc(free)}`)

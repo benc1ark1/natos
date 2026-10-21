@@ -407,7 +407,9 @@ test('"what next?": the first thing on Today not done yet, with exactly what to 
   await nat('what next?')
   if (left.length) {
     noAI()
-    const title = `${left[0].at ? `${left[0].at} ` : ''}${left[0].title}`
+    // fix round 18: a clock time only for a fixed training session (his set time); study shows none
+    const at = left[0].kind === 'training' && left[0].fixed ? left[0].at : null
+    const title = `${at ? `${at} ` : ''}${left[0].title}`
     assert.ok(last().text.startsWith(`👉 <b>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</b>`), last().text)
     assert.match(last().text, /📖 /)
   } else assert.match(last().text, /Matrices: Bicen questions\./)

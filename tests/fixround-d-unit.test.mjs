@@ -1,7 +1,7 @@
 // Fix round part D (views), on his real autumn (tests/support/nat-real.mjs): THIS week (19 Oct, ACT Sun 25 Oct),
 // NEXT week (26 Oct, half-term: Vlad + FM + physics, Owen's speed Wed 11:00) and SCHOOL (2 Nov).
 // 18: Today is an ordered list with minutes; only fixed things show a clock time (school and events on the fixed line,
-//     a training session where he has to be); study and tasks show none.
+//     a training session at his set time); study, tasks and sessions the planner placed show their minutes only.
 // 19: /week shows the planned study and training blocks (plan_blocks) among the bookings, not only the bookings.
 // Run: node --experimental-strip-types --no-warnings --import ./tests/support/register.mjs --test tests/fixround-d-unit.test.mjs
 import { test } from 'node:test'
@@ -14,6 +14,7 @@ import { dayItems } from '../lib/day.ts'
 import { renderToday, renderWeek } from '../lib/telegram/views.ts'
 import { planningSettings } from '../lib/freetime.ts'
 import { addDays } from '../lib/time.ts'
+import { isFixedSession } from '../lib/today/fixed.ts'
 
 const ch = (from, to) => holidayChanges(EVENTS, [], PLANNING, from, to)
 /** The fixed line's input, as lib/today/load.ts makes it (school and events only). */
@@ -21,7 +22,9 @@ const fixedOn = (date) => dayItems({ date, events: EVENTS, changes: ch(addDays(d
   .filter((it) => it.kind === 'school' || it.kind === 'event').map((it) => ({ at: it.at || null, end: it.end, title: it.title, icon: it.icon, school: it.kind === 'school' }))
 const blk = (id, start, end, title, extra = {}) => ({ id: `00000000-0000-4000-8000-${String(id).padStart(12, '0')}`, start_time: `${start}:00`, end_time: `${end}:00`, title, kind: 'focus', status: 'planned',
   task_id: null, goal_id: null, target_id: null, source: 'auto', ...extra })
-const today = (date, blocks) => todayFromSaved({ date, mode: date < SCHOOL ? 'half_term' : 'school', blocks, picks: [], fixed: fixedOn(date), max: 5, source: 'auto' })
+/** As lib/today/load.ts does it: a training block is fixed when it's at his set time (lib/today/fixed.ts). */
+const today = (date, blocks, opts = {}) => todayFromSaved({ date, mode: date < SCHOOL ? 'half_term' : 'school', blocks, picks: [], fixed: fixedOn(date), max: 5, source: 'auto',
+  trainingFixed: (b) => isFixedSession(PLANNING, date, b.title, b.start_time), ...opts })
 const itemLinesOf = (html) => html.split('\n').filter((l) => /^(\d\.|✅)/.test(l))
 
 // ---------------------------------------------------------------------------
@@ -45,7 +48,7 @@ test('18 · THIS week, Wed 21 Oct (ACT focus): an ordered list with minutes, no 
   assert.deepEqual(todayButtons(plan).map((r) => r[0].text), ['☐ ACT reading passage set', '☐ ACT grammar: punctuation drill', '✅ ACT maths: timed section'])
 })
 
-test('18 · NEXT week, Wed 28 Oct (half-term): Owen’s speed 11:00 shows its time; FM, Vlad and physics are numbered in order with minutes', () => {
+test('18 · NEXT week, Wed 28 Oct (half-term): Owen’s speed at his set time 11:00 shows it; FM, Vlad and physics are numbered in order with minutes', () => {
   const plan = today(day(NEXT, 2), [
     blk(4, '09:30', '10:30', 'Vlad: mechanics questions', { task_id: 't-vlad' }),
     blk(5, '11:00', '12:00', 'Speed @ Owen', { kind: 'training' }),
@@ -74,7 +77,7 @@ test('18 · SCHOOL week, Mon 2 Nov: school and football keep their times on the 
   assert.match(eveningHtml(plan), /^🌙 <b>Tap what you did today<\/b> <i>\(0\/2 so far\)<\/i>\n☐ FM HT2 revision\n☐ Physics: SHM booklet corrections/)
 })
 
-test('18 · "what’s on today?": the plan is a numbered list with minutes; training keeps its time', () => {
+test('18 · "what’s on today?": the plan is a numbered list with minutes; a fixed session (speed Wed 11:00) keeps its time', () => {
   const d = viewData(day(NEXT, 2), { plan: [
     { id: 'p1', start_time: '09:30', end_time: '10:30', title: 'Vlad: mechanics questions', kind: 'focus', task_id: 't-vlad' },
     { id: 'p2', start_time: '11:00', end_time: '12:00', title: 'Speed @ Owen', kind: 'training', task_id: null },
@@ -82,6 +85,54 @@ test('18 · "what’s on today?": the plan is a numbered list with minutes; trai
   ], now: new Date('2026-10-28T08:00:00Z') })
   const html = renderToday(d).html
   assert.match(html, /🗓 <b>Plan<\/b>\n1\. 📚 Vlad: mechanics questions <i>· 1h<\/i>\n2\. 🏋️ 11:00–12:00 Speed @ Owen\n3\. 📚 Physics: SHM booklet <i>· 45m<\/i>/)
+})
+
+// Item 18 (follow-up): only FIXED things show a time. A session the planner placed itself ("Upper @ PureGym" 12:30)
+// shows its minutes like study, with no leave-by line; his set times (Owen's speed: Wed 11:00 in half-term, Tue 18:30
+// in term) keep theirs.
+
+test('18 · fixed or not: his set times (half-term Wed 11:00, term Tue 18:30) are fixed; planner-placed and moved sessions are not', () => {
+  assert.equal(isFixedSession(PLANNING, day(NEXT, 2), 'Speed + circuits @ Owen', '11:00:00'), true, 'half-term: speed Wed 11:00')
+  assert.equal(isFixedSession(PLANNING, day(THIS, 2), 'Speed + circuits @ Owen', '11:00'), true, 'the ACT week is half-term too')
+  assert.equal(isFixedSession(PLANNING, day(NEXT, 2), 'Speed + circuits @ Owen', '12:00'), false, 'moved off his set time')
+  assert.equal(isFixedSession(PLANNING, day(SCHOOL, 1), 'Speed + circuits @ Owen', '18:30'), true, 'term: speed Tue 18:30')
+  assert.equal(isFixedSession(PLANNING, day(NEXT, 1), 'Speed + circuits @ Owen', '18:30'), false, 'half-term: the term time does not count')
+  assert.equal(isFixedSession(PLANNING, day(THIS, 4), 'Upper @ PureGym', '12:30'), false, 'upper has days but no set time: the planner chose 12:30')
+  assert.equal(isFixedSession(PLANNING, day(SCHOOL, 1), 'Upper · PureGym', '17:00'), false)
+})
+
+test('18 · THIS week, Fri 23 Oct: the planner’s "Upper @ PureGym" 12:30 shows its minutes, no clock time and no leave-by line', () => {
+  const plan = today(day(THIS, 4), [
+    blk(10, '10:00', '10:40', 'ACT reading: timed passages'),
+    blk(11, '12:30', '13:30', 'Upper @ PureGym', { kind: 'training' }),
+    blk(12, '15:00', '15:30', 'ACT grammar: commas', { kind: 'light' }),
+  ], { trainingOpen: (b) => (isFixedSession(PLANNING, day(THIS, 4), b.title, b.start_time) ? 'leave 12:00 (30 min)' : '') })
+  const html = todayHtml(plan)
+  assert.deepEqual(itemLinesOf(html), ['1. 📚 ACT reading: timed passages <i>· 40m</i>', '2. 🏋️ Upper @ PureGym <i>· 1h</i>', '3. 📚 ACT grammar: commas <i>· 30m</i>'])
+  assert.doesNotMatch(html, /12:30|leave/)
+  assert.deepEqual(todayButtons(plan).map((r) => r[0].text), ['☐ ACT reading: timed passages', '☐ Upper @ PureGym', '☐ ACT grammar: commas'])
+  assert.equal(clockOf(plan.items[1]), null)
+  assert.equal(plan.items[1].fixed, false)
+})
+
+test('18 · SCHOOL week, Tue 3 Nov: speed at his term time 18:30 keeps it (and its leave-by line); upper 17:00 the planner placed does not', () => {
+  const tue = day(SCHOOL, 1)
+  const speed = today(tue, [blk(13, '18:30', '19:30', 'Speed + circuits @ Owen', { kind: 'training' })], { trainingOpen: () => 'leave 18:00 (30 min, a guess)' })
+  assert.deepEqual(itemLinesOf(todayHtml(speed)), ['1. <b>18:30</b> 🏋️ Speed + circuits @ Owen <i>· 1h</i>'])
+  assert.match(todayHtml(speed), /↳ leave 18:00/)
+  assert.deepEqual(todayButtons(speed).map((r) => r[0].text), ['☐ 18:30 Speed + circuits @ Owen'])
+  const upper = today(tue, [blk(14, '17:00', '18:30', 'Upper @ PureGym', { kind: 'training' })])
+  assert.deepEqual(itemLinesOf(todayHtml(upper)), ['1. 🏋️ Upper @ PureGym <i>· 1h 30m</i>'])
+  assert.deepEqual(todayButtons(upper).map((r) => r[0].text), ['☐ Upper @ PureGym'])
+})
+
+test('18 · "what’s on today?" on Fri 23 Oct: the planner’s upper 12:30 is numbered with its minutes (no clock time)', () => {
+  const fri = renderToday(viewData(day(THIS, 4), { plan: [
+    { id: 'p4', start_time: '10:00', end_time: '10:40', title: 'ACT reading: timed passages', kind: 'focus', task_id: null },
+    { id: 'p5', start_time: '12:30', end_time: '13:30', title: 'Upper @ PureGym', kind: 'training', task_id: null },
+  ], now: new Date('2026-10-23T07:00:00Z') })).html
+  assert.match(fri, /🗓 <b>Plan<\/b>\n1\. 📚 ACT reading: timed passages <i>· 40m<\/i>\n2\. 🏋️ Upper @ PureGym <i>· 1h<\/i>/)
+  assert.doesNotMatch(fri, /12:30/)
 })
 
 // ---------------------------------------------------------------------------

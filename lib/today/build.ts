@@ -37,6 +37,7 @@ export type TodayItem = {
   programmeItemId: string | null
   targetId: string | null
   shortened?: boolean         // cut to fit the free time it has
+  fixed?: boolean             // item 18: a fixed training session (his set time): only then is its clock time shown
 }
 
 export type HiddenItem = { key: string; title: string; open: string; minutes: number; why: string }
@@ -54,7 +55,8 @@ export type TodayPlan = {
 }
 
 /** A training session today (an applied block, or where the week optimiser puts it). Already has its time. */
-export type TrainingIn = { title: string; start: string; end: string; blockIds: string[]; targetId: string | null; open: string; done: boolean; cutFrom?: string; cutTo?: string }
+export type TrainingIn = { title: string; start: string; end: string; blockIds: string[]; targetId: string | null; open: string; done: boolean; cutFrom?: string; cutTo?: string
+  fixed?: boolean }           // at his set time for it (lib/today/fixed.ts), not a time the planner chose
 /** A fixed commitment (school, football, an event) for the one-line summary. */
 export type FixedIn = { at: string | null; end: string | null; title: string; icon: string; school?: boolean }
 /** Something not done on an earlier day: it rolls on when the planner picks it again. */
@@ -132,7 +134,7 @@ export function trainingItem(date: string, list: TrainingIn[]): TodayItem | null
     key: `training:${date}`, at: s[0].start, end: s.at(-1)!.end, title,
     open, url: null, minutes, why: '', done: { kind: 'block' }, kind: 'training', heavy: true,
     subject: null, rolledFrom: null, isDone: s.every((t) => t.done), blockIds: s.flatMap((t) => t.blockIds), taskId: null, topicId: null, goalId: null,
-    programmeItemId: null, targetId: s.find((t) => t.targetId)?.targetId ?? null,
+    programmeItemId: null, targetId: s.find((t) => t.targetId)?.targetId ?? null, fixed: !!s[0].fixed,
   }
 }
 
@@ -251,12 +253,13 @@ export function subjectPick(b: SavedBlock, picks: Pick[]): Pick | null {
 export function todayFromSaved(x: {
   date: string; mode: 'half_term' | 'school'; blocks: SavedBlock[]; picks: Pick[]; fixed: FixedIn[]; max: number; source: 'auto' | 'his'
   trainingOpen?: (b: SavedBlock) => string; effectDone?: (it: TodayItem) => boolean
+  trainingFixed?: (b: SavedBlock) => boolean   // item 18: at his set time (lib/today/fixed.ts)
   now?: string | null         // HH:MM now, if it's today: what's still to come is shown first
 }): TodayPlan {
   const max = clampItems(x.max)
   const live = x.blocks.filter((b) => b.status === 'planned' || b.status === 'done').filter((b) => b.kind !== 'rest')
   const trainBlocks = live.filter((b) => b.kind === 'training')
-  const train = trainingItem(x.date, trainBlocks.map((b) => ({ title: b.title, start: b.start_time.slice(0, 5), end: b.end_time.slice(0, 5), blockIds: [b.id], targetId: b.target_id, open: x.trainingOpen?.(b) ?? '', done: b.status === 'done' })))
+  const train = trainingItem(x.date, trainBlocks.map((b) => ({ title: b.title, start: b.start_time.slice(0, 5), end: b.end_time.slice(0, 5), blockIds: [b.id], targetId: b.target_id, open: x.trainingOpen?.(b) ?? '', done: b.status === 'done', fixed: x.trainingFixed?.(b) ?? false })))
   const items: TodayItem[] = []
   for (const b of live.filter((y) => y.kind !== 'training')) {
     const p = matchPick(b, x.picks)

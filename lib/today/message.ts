@@ -12,9 +12,10 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const mins = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`)
 const icon = (it: TodayItem) => (it.kind === 'training' ? '🏋️' : it.kind === 'task' ? '📌' : '📚')
 
-/** Item 18: Today is an ordered list with minutes. Only a booked training session shows its clock time (he has to be
- *  there then); study and tasks are done in the list's order, so they show no time. (School and events: the fixed line.) */
-export const clockOf = (it: Pick<TodayItem, 'kind' | 'at'>): string | null => (it.kind === 'training' ? it.at : null)
+/** Item 18: Today is an ordered list with minutes. Only a FIXED training session (his set time, lib/today/fixed.ts)
+ *  shows its clock time (he has to be there then); a session the planner placed, study and tasks are done in the list's
+ *  order, so they show their minutes only. (School and events: the fixed line.) */
+export const clockOf = (it: Pick<TodayItem, 'kind' | 'at' | 'fixed'>): string | null => (it.kind === 'training' && it.fixed ? it.at : null)
 
 /** The tap for one item: its first saved block, else its task; null when there's nothing to tick yet. */
 export function tapData(view: TodayView, it: TodayItem): string | null {
@@ -25,7 +26,7 @@ export function tapData(view: TodayView, it: TodayItem): string | null {
   return null
 }
 
-/** One button per item, one per row: "☐ Physics homework" / "☐ 16:30 Upper" / "✅ …" (tap again to undo). */
+/** One button per item, one per row: "☐ Physics homework" / "☐ 11:00 Speed" (fixed) / "✅ …" (tap again to undo). */
 export function todayButtons(plan: Pick<TodayPlan, 'items'>, view: TodayView = 'm'): Button[][] {
   return plan.items.flatMap((it) => {
     const data = tapData(view, it)
@@ -34,7 +35,7 @@ export function todayButtons(plan: Pick<TodayPlan, 'items'>, view: TodayView = '
   })
 }
 
-/** One item: "2. 📚 Physics homework · 45m" ("3. <b>16:30</b> 🏋️ Upper …" for training) and, under it, exactly what to open. */
+/** One item: "2. 📚 Physics homework · 45m" ("3. <b>11:00</b> 🏋️ Speed …" for a fixed session) and, under it, exactly what to open. */
 export function itemLines(it: TodayItem, n?: number): string[] {
   const head = `${n ? `${n}. ` : ''}${clockOf(it) ? `<b>${clockOf(it)}</b> ` : ''}${icon(it)} ${esc(it.title)} <i>· ${mins(it.minutes)}</i>`
   const open = it.open ? `     ↳ ${it.url ? `<a href="${esc(it.url)}">${esc(it.open)}</a>` : esc(it.open)}` : ''
