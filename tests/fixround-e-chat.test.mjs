@@ -129,51 +129,96 @@ const SENT = new Date(Date.now() - 3 * 60_000).toISOString()
 const mail = (id, from, subject, snippet, o = {}) => ({ id, thread: `t-${id}`, from, subject, snippet, received: SENT, labels: [], automated: false, ...o })
 const classified = (n, kind, summary) => ({ n, kind, summary, event_title: '', event_date: '', event_start: '', event_end: '', date_words: '' })
 
-test('22: only CC’d or between other people: no AI, no card, no alert (even from a tutor or a flagged sender); in /mail and the Inbox list', { skip }, async () => {
+// the AI's answer for each email it's shown, by subject (anything it's shown that isn't listed fails the test)
+const sortBy = (kinds) => (body) => {
+  const p = body.messages[0].content
+  return { emails: [...p.matchAll(/<email n="(\d+)"[^>]*>\nFrom: [^\n]*\nSubject: ([^\n]*)/g)].map(([, n, subject]) => {
+    assert.ok(subject in kinds, `the AI was shown “${subject}”`)
+    return classified(Number(n), kinds[subject], `${subject} (summary)`)
+  }) }
+}
+const sentAt = (min) => new Date(Date.now() - min * 60_000).toISOString()
+
+test('22: only CC’d or clearly between other people: no AI, no card, no alert; homework, deadlines, flagged and group mail still come through; in /mail and the Inbox list', { skip }, async () => {
   await setPlanning({ mailHomeworkFrom: 'vlad.tutor@example.com' })
   await add('mail_rules', { pattern: '@ucs.org.uk', action: 'flag', label: 'school' })
   const r = await post({ account: 'school', address: 'babichn@ucs.org.uk', messages: [
-    // Vlad writes to his mum about half-term lessons, Nat CC'd (a homework sender: would have been saved as homework)
-    mail('cc1', 'Vlad <vlad.tutor@example.com>', 'Half-term lessons and homework', 'Hi, Nat’s homework for next week is the mechanics sheet…', { to: 'Mum <mum@example.com>', cc: 'Nat <babichn@ucs.org.uk>' }),
-    // two teachers about the trip (a flagged sender), not to him
-    mail('ot1', 'Ms Hall <hall@ucs.org.uk>', 'Re: Y12 trip numbers', 'Can you confirm the coach…', { to: 'Mr Lee <lee@ucs.org.uk>', cc: '' }),
-    // to him: sorted as before
-    mail('to1', 'Coach Dan <dan@club.example.com>', 'Saturday?', 'Can you play on Saturday?', { to: 'babichn@ucs.org.uk', cc: 'Mum <mum@example.com>' }),
+    // Mum asks Dad about Saturday's lift, Nat CC'd: worth a look
+    mail('cc1', 'Mum <mum@example.com>', 'Lift on Saturday', 'Can you take the boys to the match?', { to: 'Dad <dad@example.com>', cc: 'Nat <babichn@ucs.org.uk>', received: sentAt(9) }),
+    // the club's treasurer thanks Dad: between other people
+    mail('ot1', 'Mr Lee <lee@club.example.com>', 'Club fees', 'Thanks for paying October.', { to: 'Dad <dad@example.com>', cc: '', received: sentAt(8) }),
+    // Vlad writes to his mum about half-term homework, Nat CC'd: homework is never filed away
+    mail('hw1', 'Vlad <vlad.tutor@example.com>', 'Half-term lessons and homework', 'Hi, Nat’s homework for next week is the mechanics sheet…', { to: 'Mum <mum@example.com>', cc: 'Nat <babichn@ucs.org.uk>', received: sentAt(7) }),
+    // two teachers about the trip: not to him, but his rule flags @ucs.org.uk
+    mail('fl1', 'Ms Hall <hall@ucs.org.uk>', 'Re: Y12 trip numbers', 'Can you confirm the coach…', { to: 'Mr Lee <lee@ucs.org.uk>', cc: '', received: sentAt(6) }),
+    // the coach writes to the team's group address (he's in it): for him
+    mail('gr1', 'Coach Dan <dan@club.example.com>', 'Saturday?', 'Can you all play on Saturday?', { to: 'U18 team <u18team@club.example.com>', cc: '', received: sentAt(5) }),
+    // between other people, but with a deadline: comes through
+    mail('dl1', 'Mr Lee <lee@club.example.com>', 'Kit order', 'Sizes in by Friday please', { to: 'Dad <dad@example.com>', cc: '', received: sentAt(4) }),
   ] })
   assert.equal(r.status, 200)
   const { processMail } = await import('../lib/mail/watcher.ts')
-  chat.ai.script(SORT, (body) => {
-    const p = body.messages[0].content
-    assert.doesNotMatch(p, /Half-term lessons|Y12 trip/, 'the AI never sees them (no cost)')
-    return { emails: [classified(1, 'reply', 'Dan asks if you can play Saturday')] }
-  })
-  assert.deepEqual(await processMail(await session(), OWNER_TG), { sorted: 3, notified: 1 })
-  const rows = await q(`select message_id, kind, flagged, details, why, notified_at from emails order by message_id`)
+  chat.ai.script(SORT, sortBy({ 'Half-term lessons and homework': 'homework', 'Re: Y12 trip numbers': 'ignore', 'Saturday?': 'reply', 'Kit order': 'reply' }))
+  const res = await processMail(await session(), OWNER_TG)
+  assert.equal(res.sorted, 6)
+  const rows = await q(`select message_id, kind, flagged, details, why from emails order by message_id`)
   const by = Object.fromEntries(rows.map((x) => [x.message_id, x]))
   assert.deepEqual([by.cc1.kind, by.cc1.details, by.cc1.flagged], ['ignore', { look: 'cc' }, false])
-  assert.deepEqual([by.ot1.kind, by.ot1.details, by.ot1.flagged], ['ignore', { look: 'others' }, false], 'a flagged sender, but not to him')
   assert.match(by.cc1.why, /only CC’d/)
-  assert.equal(by.to1.kind, 'reply')
-  const sent = chat.tg.sent()
-  assert.equal(sent.length, 1, 'one alert: Dan’s')
-  assert.match(sent[0].text, /Coach Dan/)
-  assert.equal((await q(`select count(*)::int n from tasks`))[0].n, 0, 'Vlad’s CC is not saved as homework')
-  chat.noSurprises()
+  assert.deepEqual([by.ot1.kind, by.ot1.details], ['ignore', { look: 'others' }])
+  assert.equal(by.hw1.kind, 'homework', 'Vlad’s CC is homework')
+  assert.equal(by.fl1.flagged, true, 'a flagged sender is never filed away')
+  assert.equal(by.gr1.kind, 'reply', 'a group he’s in is for him')
+  assert.equal(by.dl1.kind, 'reply', 'a deadline is never filed away')
+  for (const id of ['hw1', 'fl1', 'gr1', 'dl1']) assert.ok(!by[id].details?.look, id)
+  const sent = chat.tg.sent().map((x) => x.text).join('\n---\n')
+  assert.doesNotMatch(sent, /Lift on Saturday|Club fees/, 'no alert for the two worth a look')
+  assert.match(sent, /Coach Dan/)
+  assert.match(sent, /Kit order/)
+  // the cards for the four that came through are sorted as usual (not scripted here); none is about the two filed away
+  const calls = chat.ai.byModel(SORT).map((x) => JSON.stringify(x.body.messages))
+  assert.ok(calls.length >= 2)
+  for (const c of calls) assert.doesNotMatch(c, /Lift on Saturday|Club fees/)
+  assert.equal(chat.ai.pending(), 0)
 
   // /mail lists them, with a Gmail link each
   await chat.nat('/mail')
   const m = chat.last().text
   assert.match(m, /👀 <b>Emails worth a look<\/b>/)
-  assert.match(m, /<a href="https:\/\/mail\.google\.com\/mail\/\?authuser=babichn%40ucs\.org\.uk#all\/t-cc1">Vlad: Half-term lessons and homework<\/a> <i>\(\w+ \d+ \w+ · only CC’d\)<\/i>/)
-  assert.match(m, /Ms Hall: Re: Y12 trip numbers<\/a> <i>\(\w+ \d+ \w+ · between other people\)<\/i>/)
-  assert.doesNotMatch(m, /Coach Dan: Saturday/)
+  assert.match(m, /<a href="https:\/\/mail\.google\.com\/mail\/\?authuser=babichn%40ucs\.org\.uk#all\/t-cc1">Mum: Lift on Saturday<\/a> <i>\(\w+ \d+ \w+ · only CC’d\)<\/i>/)
+  assert.match(m, /Mr Lee: Club fees<\/a> <i>\(\w+ \d+ \w+ · between other people\)<\/i>/)
+  assert.doesNotMatch(m, /Coach Dan: Saturday|Half-term lessons/)
 
   // the Inbox page's list (his own session, row level security)
   const { loadWorthALook } = await import('../lib/mail/look.ts')
   const list = await loadWorthALook(await session())
-  assert.deepEqual(list.map((e) => [e.subject, e.look]).sort(), [['Half-term lessons and homework', 'cc'], ['Re: Y12 trip numbers', 'others']])
-  // nothing more is ever sent about them
-  assert.deepEqual(await processMail(await session(), OWNER_TG), { sorted: 0, notified: 0 })
+  assert.deepEqual(list.map((e) => [e.subject, e.look]).sort(), [['Club fees', 'others'], ['Lift on Saturday', 'cc']])
+})
+
+test('22: school mail forwarded to his personal Gmail is To him (both his accounts are his); a group he’s in too', { skip }, async () => {
+  // the school watcher has checked in, so its address is known
+  await post({ account: 'school', address: 'babichn@ucs.org.uk', messages: [] })
+  const r = await post({ account: 'personal', address: 'nat.babich@gmail.com', messages: [
+    // forwarded from school: To his school address, not this account's
+    mail('fw1', 'Ms Hall <hall@ucs.org.uk>', 'Trip consent', 'Please could you confirm you’re coming.', { to: 'Nat Babich <babichn@ucs.org.uk>', cc: '', received: sentAt(6) }),
+    // a teacher to the Year 13 Google Group, forwarded too
+    mail('fw2', 'Mr Lee <lee@ucs.org.uk>', 'Assembly moved', 'Assembly is in the hall this week.', { to: 'Year 13 <year13@ucs.org.uk>', cc: '', received: sentAt(5) }),
+    // before his Google account is known: an email CC'd to it looks like other people's
+    mail('fw3', 'Coach Dan <dan@club.example.com>', 'Training', 'Training is at 6 tonight.', { to: 'mum@example.com', cc: 'Nat <nat.b.google@gmail.com>', received: sentAt(4) }),
+  ] })
+  assert.equal(r.status, 200)
+  // his Google account's address (Settings → Google) counts as his
+  await add('integrations', { provider: 'google', status: 'connected', account: 'nat.b.google@gmail.com' })
+  const r2 = await post({ account: 'personal', address: 'nat.babich@gmail.com', messages: [
+    mail('fw4', 'Coach Dan <dan@club.example.com>', 'Training', 'Training is at 6 tonight.', { to: 'mum@example.com', cc: 'Nat <nat.b.google@gmail.com>', received: sentAt(3) }),
+  ] })
+  assert.equal(r2.status, 200)
+  const rows = await q(`select message_id, details from emails where account = 'personal' order by message_id`)
+  const by = Object.fromEntries(rows.map((x) => [x.message_id, x.details]))
+  assert.deepEqual(by.fw1, {}, 'To his school address: for him')
+  assert.deepEqual(by.fw2, {}, 'the Year 13 group: for him')
+  assert.deepEqual(by.fw3, { addressed: 'others' }, '(before his Google account was known)')
+  assert.deepEqual(by.fw4, { addressed: 'cc' }, 'his Google account’s address: only CC’d')
 })
 
 test('22: a script copied before this round (no To/Cc) is sorted as before', { skip }, async () => {

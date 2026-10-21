@@ -5,8 +5,9 @@
  * needs a reply, event, or ignore) and tells you on Telegram. Only an email that looks like homework (homework words
  * in its subject or preview, or from a sender Nat OS says sets homework: your tutors and your school) also goes with
  * its text (up to 4,000 characters), so the task gets the right deadline and what to do. Nat OS keeps that text only
- * if it is homework. Who it was sent to (To and Cc) goes too: an email you're only CC'd on, or that's between other
- * people, never alerts you and is listed under "Emails worth a look" (the Inbox page and /mail).
+ * if it is homework. Who it was sent to (To and Cc) goes too: an email you're only CC'd on, or that's clearly between
+ * other people (not a group or list you're in, not homework, a deadline or a sender you flag), never alerts you and is
+ * listed under "Emails worth a look" (the Inbox page and /mail).
  *  - Read-only: this project only has permission to READ Gmail (see appsscript.json), so it can't send, delete,
  *    archive or mark anything as read, even by mistake.
  *  - Never twice: it remembers what it has sent, and Nat OS ignores repeats anyway.
@@ -35,6 +36,7 @@ const MAIL_TAG = 'natosMail';
 // To and Cc: an email you're only CC'd on, or that's between other people, goes in "Emails worth a look" (no alert)
 const HEADERS = ['From', 'To', 'Cc', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
 const MAX_BODY = 4000;
+const MAX_RCPT = 4000;       // To and Cc each (the same as Nat OS: lib/mail/rules.ts MAX_RCPT), so a long class list keeps your address
 // the same words Nat OS uses (lib/mail/homework.ts HOMEWORK_WORDS)
 const HOMEWORK_WORDS = /\b(home ?work|hw|due|deadline|assignment|worksheet|exercises?|problems?|questions?|coursework|essay|submit|hand ?in|past paper|revise|revision)\b/i;
 
@@ -103,7 +105,8 @@ function newMessages(since, sentIds) {
     const auto = (h['auto-submitted'] || 'no').toLowerCase();
     const one = {
       id: m.id, thread: m.threadId, from: (h['from'] || '').slice(0, 400), subject: (h['subject'] || '').slice(0, 300),
-      to: (h['to'] || '').slice(0, 1000), cc: (h['cc'] || '').slice(0, 1000),
+      to: (h['to'] || '').slice(0, MAX_RCPT), cc: (h['cc'] || '').slice(0, MAX_RCPT),
+      list: !!(h['list-id'] || ['bulk', 'list'].indexOf(precedence) >= 0),
       snippet: (m.snippet || '').slice(0, 300), received: new Date(Number(m.internalDate)).toISOString(),
       labels: (m.labelIds || []).filter((l) => l.indexOf('CATEGORY_') === 0),
       automated: !!(h['list-unsubscribe'] || h['list-id'] || ['bulk', 'list', 'junk'].indexOf(precedence) >= 0 || auto !== 'no'),

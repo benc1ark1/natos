@@ -12,9 +12,12 @@ export type Incoming = {
   id: string; thread: string | null; from: string; subject: string; snippet: string; received: string
   labels: string[]; automated: boolean; body?: string
   to?: string; cc?: string   // the To and Cc headers (fix round 22; a script copied before then sends neither)
+  list?: boolean             // it came through a mailing list or group (a List-Id or "Precedence: list/bulk" header)
 }
 
 export const MAX_BODY = 4000
+/** To and Cc are each cut to this many characters, by the script and here alike (a long class list keeps his address). */
+export const MAX_RCPT = 4000
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim().slice(0, max) : '')
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
@@ -44,7 +47,8 @@ export function readIncoming(body: unknown): { account: Account; address: string
       labels: Array.isArray(x.labels) ? x.labels.filter((l): l is string => typeof l === 'string' && /^CATEGORY_[A-Z]+$/.test(l)).slice(0, 5) : [],
       automated: x.automated === true,
       ...(typeof x.body === 'string' && x.body.trim() ? { body: x.body.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim().slice(0, MAX_BODY) } : {}),
-      ...(typeof x.to === 'string' ? { to: str(x.to, 2000), cc: str(x.cc, 2000) } : {}),
+      ...(typeof x.to === 'string' ? { to: str(x.to, MAX_RCPT), cc: str(x.cc, MAX_RCPT) } : {}),
+      ...(x.list === true ? { list: true } : {}),
     })
   }
   const address = str(b.address, 320)
@@ -69,16 +73,32 @@ const sameBox = (a: string) => {
   return `${host === 'gmail.com' ? user.replace(/\./g, '') : user}@${host}`
 }
 
-/** Was the email written to him (fix round 22)? 'to': he's in To (or nobody is: "undisclosed recipients", sent to him
- *  by Bcc); 'cc': he's only in Cc; 'others': it's between other people (he's in neither). null: the script sent no
- *  To/Cc (a copy from before) or his address isn't known, so it's sorted as before. */
-export function addressedTo(m: Pick<Incoming, 'to' | 'cc'>, mine: (string | null | undefined)[]): 'to' | 'cc' | 'others' | null {
+// "all" and "set" only as their own part ("all-staff", "all@", "set3", "maths.set2"), so Ms Hall, Allen and Seth are people
+const GROUP = /\+|group|list|class|student|staff|parent|everyone|members|team|year|(^|[._-])all([._\d-]|$)|(^|[._-])y\d|set\d|(^|[._-])set([._-]|$)/
+/** An address that looks like a group or list, not one person: a class or year Google Group ("year13@", "y12parents@"),
+ *  "all-staff@", "students@", a "+" address, a digits-only name. He may well be in it, so it's never "between others". */
+export const groupLike = (a: string) => {
+  const user = a.toLowerCase().split('@')[0] ?? ''
+  return GROUP.test(user) || /^[0-9._-]+$/.test(user)
+}
+
+/** Was the email written to him (fix round 22)? Only an email that is clearly not for him is filed away:
+ *  'cc': he's only in Cc (and To is people, not a group he might be in); 'others': it's clearly between other people
+ *  (To and Cc are individual people's addresses, none his, no group or list address, not sent through a list).
+ *  'to': anything else, including Bcc ("undisclosed recipients"), a group or list, or a header cut short. null: the
+ *  script sent no To/Cc (a copy from before) or his address isn't known. Either way it's sorted as before.
+ *  (The sorting still shows homework, deadlines and his flagged senders: lib/mail/watcher.ts.) */
+export function addressedTo(m: Pick<Incoming, 'to' | 'cc' | 'list'>, mine: (string | null | undefined)[]): 'to' | 'cc' | 'others' | null {
   const me = new Set(mine.filter((a): a is string => !!a && a.includes('@')).map(sameBox))
   if (m.to === undefined || !me.size) return null
-  const to = addressesIn(m.to).map(sameBox), cc = addressesIn(m.cc).map(sameBox)
-  if (!to.length && !cc.length) return 'to'
+  const toRaw = addressesIn(m.to), ccRaw = addressesIn(m.cc)
+  const to = toRaw.map(sameBox), cc = ccRaw.map(sameBox)
   if (to.some((a) => me.has(a))) return 'to'
-  return cc.some((a) => me.has(a)) ? 'cc' : 'others'
+  // Bcc to him, a list, or a header too long to read whole: unsure, so it's for him
+  if (!to.length || m.list || m.to.length >= MAX_RCPT || (m.cc ?? '').length >= MAX_RCPT) return 'to'
+  if (toRaw.some(groupLike)) return 'to'
+  if (cc.some((a) => me.has(a))) return 'cc'
+  return ccRaw.some(groupLike) ? 'to' : 'others'
 }
 
 /** "Sam Smith <sam@tutor.com>" → { name: 'Sam Smith', email: 'sam@tutor.com' } */

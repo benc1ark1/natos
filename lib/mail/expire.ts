@@ -14,6 +14,8 @@ import { HOMEWORK_WORDS } from './homework'
 /** One tutor from his setting: the task sources that are theirs, and the words their lessons' titles contain. */
 export type Tutor = { item: string; keys: string[]; names: string[] }
 
+// a tutor's work besides the homework words: "Recursion sheet", "Merge sort write-up", "Past paper practice"
+const WORK_WORDS = /\b(sheets?|booklet|write-?up|practi[cs]e|reading|read|paper|quiz|test|project|code|program(me)?)\b/i
 const words = (s: string) => ` ${s.toLowerCase().replace(/[’']s\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim()} `
 /** Does the text contain this phrase as whole words ("CS tutor" in "CS tutor (Sam)", not "Samantha")? */
 const has = (text: string | null | undefined, phrase: string) => { const p = words(phrase).trim(); return !!p && words(text ?? '').includes(` ${p} `) }
@@ -30,9 +32,12 @@ export function tutorsOf(setting: string, sources: Source[]): Tutor[] {
 
 export type HomeworkRow = { id: string; title: string; details: string | null; source_text: string | null; origin: string | null; due_at: string | null; created_at: string; is_system?: boolean }
 
-/** Is this task that tutor's homework? Its source is theirs, it's homework naming them, or it came from their email. */
+/** Is this task that tutor's homework? Its source is theirs, it's homework naming them, or it came from their email.
+ *  Only homework expires: it has a due date or reads like homework ("Binary search exercises"); a reminder such as
+ *  "Pay Sam for lessons" (no due date) never does. */
 export function isTutorHomework(t: HomeworkRow, tutor: Tutor): boolean {
   if (t.is_system) return false
+  if (!t.due_at && ![t.title, t.details ?? ''].some((x) => HOMEWORK_WORDS.test(x) || WORK_WORDS.test(x))) return false
   if (t.origin && tutor.keys.includes(t.origin)) return true
   const fromEmail = (t.details ?? '').match(/From (\S+?)’s email/)?.[1]
   if (fromEmail && tutor.names.some((n) => words(n) === words(fromEmail))) return true

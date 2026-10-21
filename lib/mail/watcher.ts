@@ -137,6 +137,14 @@ export const lookOf = (e: Pick<EmailRow, 'details'>): 'cc' | 'others' | null => 
   return v === 'cc' || v === 'others' ? v : null
 }
 
+/** May an email he's only CC'd on (or between others) be filed away? Not when it's homework (homework words in its
+ *  subject, preview or text, or one of his homework senders), has a deadline, or his rules flag it. */
+export function hideable(e: Pick<EmailRow, 'subject' | 'snippet' | 'received_at' | 'flagged'> & { body?: string | null }, hw: HomeworkSender): boolean {
+  if (e.flagged || hw === 'listed') return false
+  const text = [e.snippet, e.body].filter(Boolean).join('\n')
+  return !HOMEWORK_WORDS.test(`${e.subject ?? ''}\n${text}`) && findDeadline({ subject: e.subject, body: text, sentAt: e.received_at }).guess
+}
+
 /** Sort what's waiting. Never throws for one bad batch: those emails are tried again next run (3 tries). */
 export async function sortPending(sb: SupabaseClient, today = todayISO()): Promise<{ sorted: number; ai: number; waiting: number }> {
   const stale = new Date(Date.now() - 10 * 60_000).toISOString()
@@ -171,9 +179,9 @@ export async function sortPending(sb: SupabaseClient, today = todayISO()): Promi
     const hw = homeworkSender(e, hwFrom)
     // a sender he named always gets through; school no-reply robots and newsletters are still robots
     if (!e.flagged && hw !== 'listed' && isAutomated(e)) { await save(e, { status: 'sorted', kind: 'ignore', why: 'automated (newsletter, promo or no-reply)' }); sorted++; continue }
-    // fix round 22: he's only CC'd, or it's between other people: no card and no alert (not even a flagged sender or a
-    // tutor), and no AI. It goes in "Emails worth a look" (the Inbox page and /mail)
-    const look = lookOf(e)
+    // fix round 22: he's only CC'd, or it's clearly between other people: no card, no alert and no AI. It goes in
+    // "Emails worth a look" (the Inbox page and /mail). Never homework, a deadline, his flagged or homework senders
+    const look = hideable(e, hw) ? lookOf(e) : null
     if (look) { await save(e, { status: 'sorted', kind: 'ignore', flagged: false, why: look === 'cc' ? 'worth a look: you’re only CC’d' : 'worth a look: between other people', details: { look } }); sorted++; continue }
     forAI.push({ ...e, hw, setsHomework: !!hw })
   }

@@ -10,7 +10,8 @@ import assert from 'node:assert/strict'
 import { THIS, NEXT, SCHOOL, TODAY, ACT_DAY, day, ev, at, TASKS } from './support/nat-real.mjs'
 import { classroomDetails, classroomTitle, objectiveOf, plainHomeworkTitle } from '../lib/tracker/classroom.ts'
 import { expiredHomework, isTutorHomework, tutorsOf } from '../lib/mail/expire.ts'
-import { addressedTo, readIncoming } from '../lib/mail/rules.ts'
+import { addressedTo, groupLike, readIncoming } from '../lib/mail/rules.ts'
+import { hideable } from '../lib/mail/watcher.ts'
 import { moreSettings } from '../lib/settings.ts'
 import { DEFAULT_SOURCES } from '../lib/lists.ts'
 
@@ -110,7 +111,7 @@ test('22: who it was written to, from the To and Cc headers', () => {
   assert.equal(addressedTo({ to: 'Nat Babich <babichn@ucs.org.uk>', cc: '' }, ME), 'to')
   assert.equal(addressedTo({ to: 'Mum <mum@example.com>, babichn@ucs.org.uk', cc: 'Dad <dad@example.com>' }, ME), 'to')
   assert.equal(addressedTo({ to: 'Mum <mum@example.com>', cc: 'Nat <BabichN@ucs.org.uk>' }, ME), 'cc', 'only CC’d (any case)')
-  assert.equal(addressedTo({ to: 'Year 12 parents <y12parents@ucs.org.uk>', cc: 'Ms Hall <hall@ucs.org.uk>' }, ME), 'others', 'between other people')
+  assert.equal(addressedTo({ to: 'Mr Lee <lee@ucs.org.uk>', cc: 'Ms Hall <hall@ucs.org.uk>' }, ME), 'others', 'between other people')
   assert.equal(addressedTo({ to: 'undisclosed-recipients:;', cc: '' }, ME), 'to', 'Bcc to him')
   assert.equal(addressedTo({}, ME), null, 'an old script sends no To: sorted as before')
   assert.equal(addressedTo({ to: 'mum@example.com', cc: '' }, [null]), null, 'his address not known: sorted as before')
@@ -126,4 +127,71 @@ test('22: the script’s To/Cc and aliases are read and checked', () => {
   assert.deepEqual(r.aliases, ['nat.b@ucs.org.uk'])
   assert.deepEqual([r.messages[0].to, r.messages[0].cc], ['mum@example.com', 'babichn@ucs.org.uk'])
   assert.ok(!('to' in r.messages[1]), 'no To from an old script')
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// 22 (follow-up). Never hide an email he needs
+// ---------------------------------------------------------------------------------------------------------------
+
+test('22: a class/year Google Group or list he’s in is for him, never "between other people"', () => {
+  // NEXT week (half-term): Ms Hall writes to Year 13 about the trip; SCHOOL week: his FM set
+  for (const to of ['Year 13 <year13@ucs.org.uk>', 'y13@ucs.org.uk', 'Year 12 parents <y12parents@ucs.org.uk>', 'all-students@ucs.org.uk',
+    'fm-set2@ucs.org.uk', 'maths.set1@ucs.org.uk', 'class13b@ucs.org.uk', 'cs-group@ucs.org.uk', 'sixthform-list@ucs.org.uk', 'staff@ucs.org.uk',
+    'hall+trip@ucs.org.uk', '2027@ucs.org.uk', 'all@ucs.org.uk', 'all.y13@ucs.org.uk'])
+    assert.equal(addressedTo({ to, cc: '' }, ME), 'to', to)
+  // the group in Cc, or a list header (List-Id / Precedence: list)
+  assert.equal(addressedTo({ to: 'Mr Lee <lee@ucs.org.uk>', cc: 'year13@ucs.org.uk' }, ME), 'to')
+  assert.equal(addressedTo({ to: 'Mr Lee <lee@ucs.org.uk>', cc: '', list: true }, ME), 'to', 'sent through a list')
+  // a group in To with him in Cc: he may be in the group, so it's for him
+  assert.equal(addressedTo({ to: 'year13@ucs.org.uk', cc: 'babichn@ucs.org.uk' }, ME), 'to')
+  // people's own addresses stay people (Ms Hall, Seth, Callum, Allen)
+  for (const a of ['hall@ucs.org.uk', 'seth.b@ucs.org.uk', 'callum@example.com', 'allen@example.com', 'marshall@example.com', 'nbabich6@gmail.com'])
+    assert.ok(!groupLike(a), a)
+  assert.equal(addressedTo({ to: 'Seth <seth.b@ucs.org.uk>', cc: 'Callum <callum@example.com>' }, ME), 'others')
+  assert.equal(addressedTo({ to: '', cc: 'mum@example.com' }, ME), 'to', 'nobody in To: Bcc to him')
+})
+
+test('22: a long class list keeps his address (the script and the app both keep 4,000 characters)', () => {
+  const pupils = Array.from({ length: 70 }, (_, i) => `Pupil ${i + 1} <pupil.${i + 1}.surname@ucs.org.uk>`).join(', ')
+  assert.ok(pupils.length > 2000 && pupils.length < 3900, String(pupils.length))
+  const r = readIncoming({ account: 'school', address: 'babichn@ucs.org.uk', messages: [{ id: 'long1', from: 'Ms Hall <hall@ucs.org.uk>', subject: 'Trip money',
+    snippet: '', received: at(TODAY, '09:00'), to: `${pupils}, Nat Babich <babichn@ucs.org.uk>`, cc: '' }] })
+  assert.equal(addressedTo(r.messages[0], ME), 'to', 'his address at the end of a 70-name To')
+  // cut short anyway (an even longer list): unsure, so it's for him
+  const huge = Array.from({ length: 160 }, (_, i) => `pupil.${i + 1}.surname@ucs.org.uk`).join(', ')
+  const r2 = readIncoming({ account: 'school', messages: [{ id: 'long2', from: 'hall@ucs.org.uk', subject: 'Trip', snippet: '', received: at(TODAY, '09:00'), to: huge, cc: '' }] })
+  assert.equal(r2.messages[0].to.length, 4000)
+  assert.equal(addressedTo(r2.messages[0], ME), 'to')
+  // the list header is read
+  const r3 = readIncoming({ account: 'school', messages: [{ id: 'l3', from: 'hall@ucs.org.uk', subject: 'Trip', snippet: '', received: at(TODAY, '09:00'), to: 'lee@ucs.org.uk', list: true }] })
+  assert.equal(r3.messages[0].list, true)
+})
+
+test('22: both his accounts are him: school mail forwarded to his personal Gmail is still To him', () => {
+  // the personal watcher sees To: his school address; the school account's address (and his Google account) count
+  const fwd = { to: 'Nat Babich <babichn@ucs.org.uk>', cc: '' }
+  assert.equal(addressedTo(fwd, ['nat.babich@gmail.com', 'babichn@ucs.org.uk']), 'to')
+  assert.equal(addressedTo({ to: 'mum@example.com', cc: 'NatBabich@gmail.com' }, ['babichn@ucs.org.uk', 'nat.babich@gmail.com']), 'cc')
+})
+
+test('22: homework, a deadline, a flagged or homework sender is never filed away, whatever the headers', () => {
+  const e = (o) => ({ subject: 'Lift on Saturday', snippet: 'Can you take the boys to the match?', received_at: at(TODAY, '09:00'), flagged: false, body: null, ...o })
+  assert.equal(hideable(e({}), null), true, 'a plain CC: worth a look')
+  assert.equal(hideable(e({}), 'school'), true, 'a teacher’s note about something else: worth a look')
+  assert.equal(hideable(e({ subject: 'Half-term homework' }), null), false, 'homework words')
+  assert.equal(hideable(e({ snippet: 'Please hand in the forms by Friday' }), null), false, 'a deadline')
+  assert.equal(hideable(e({ subject: 'Trip', snippet: 'Hi all', body: 'Reply slips due Thu 29 Oct.' }), 'school'), false, 'a deadline in the text')
+  assert.equal(hideable(e({ flagged: true }), null), false, 'his rules flag the sender')
+  assert.equal(hideable(e({}), 'listed'), false, 'one of his homework senders')
+})
+
+test('21: only homework expires: a reminder from Sam’s source with no due date never does', () => {
+  const [t] = tutors
+  assert.ok(!isTutorHomework(hw({ id: 'pay', title: 'Pay Sam for lessons' }), t), 'a reminder')
+  assert.ok(!isTutorHomework(hw({ id: 'pay2', origin: 'own', title: 'Pay Sam', details: 'From Sam’s email: “Invoice for October”.' }), t))
+  assert.deepEqual(gone([hw({ id: 'pay', title: 'Pay Sam for lessons', created_at: at(day(THIS, 0), '20:30') })], at(day(SCHOOL, 4), '20:00')), [])
+  // with a due date, or homework-like, it's homework (THIS week's exercises, a sheet, a write-up)
+  assert.ok(isTutorHomework(hw({ id: 'due', title: 'Arrays', due_at: at(day(THIS, 3), '17:00') }), t))
+  assert.ok(isTutorHomework(hw({ id: 'sheet', title: 'Recursion sheet' }), t))
+  assert.ok(isTutorHomework(hw({ id: 'w', title: 'Merge sort write-up' }), t))
 })

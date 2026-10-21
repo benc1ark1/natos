@@ -316,6 +316,7 @@ async function readMail(sb: SupabaseClient, list: string[]) {
     had.messages.push(...input.messages)
     if (input.sent && (!had.sent || input.sent > had.sent)) had.sent = input.sent
     had.address ??= input.address
+    had.aliases ??= input.aliases
   }
   for (const input of byAccount.values()) await ingest(sb, input).catch(() => 0)
 }
