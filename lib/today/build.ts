@@ -38,6 +38,7 @@ export type TodayItem = {
   targetId: string | null
   shortened?: boolean         // cut to fit the free time it has
   fixed?: boolean             // item 18: a fixed training session (his set time): only then is its clock time shown
+  fixedAt?: string            // that fixed session's start (a planner-placed session merged before it doesn't move it)
 }
 
 export type HiddenItem = { key: string; title: string; open: string; minutes: number; why: string }
@@ -134,7 +135,9 @@ export function trainingItem(date: string, list: TrainingIn[]): TodayItem | null
     key: `training:${date}`, at: s[0].start, end: s.at(-1)!.end, title,
     open, url: null, minutes, why: '', done: { kind: 'block' }, kind: 'training', heavy: true,
     subject: null, rolledFrom: null, isDone: s.every((t) => t.done), blockIds: s.flatMap((t) => t.blockIds), taskId: null, topicId: null, goalId: null,
-    programmeItemId: null, targetId: s.find((t) => t.targetId)?.targetId ?? null, fixed: !!s[0].fixed,
+    programmeItemId: null, targetId: s.find((t) => t.targetId)?.targetId ?? null,
+    // fixed when any session in it is at his set time; the clock shows that session's start, not the first one's
+    fixed: s.some((t) => t.fixed), ...(s.some((t) => t.fixed) ? { fixedAt: s.find((t) => t.fixed)!.start } : {}),
   }
 }
 

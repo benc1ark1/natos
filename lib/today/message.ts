@@ -15,7 +15,7 @@ const icon = (it: TodayItem) => (it.kind === 'training' ? '🏋️' : it.kind ==
 /** Item 18: Today is an ordered list with minutes. Only a FIXED training session (his set time, lib/today/fixed.ts)
  *  shows its clock time (he has to be there then); a session the planner placed, study and tasks are done in the list's
  *  order, so they show their minutes only. (School and events: the fixed line.) */
-export const clockOf = (it: Pick<TodayItem, 'kind' | 'at' | 'fixed'>): string | null => (it.kind === 'training' && it.fixed ? it.at : null)
+export const clockOf = (it: Pick<TodayItem, 'kind' | 'at' | 'fixed' | 'fixedAt'>): string | null => (it.kind === 'training' && it.fixed ? it.fixedAt ?? it.at : null)
 
 /** The tap for one item: its first saved block, else its task; null when there's nothing to tick yet. */
 export function tapData(view: TodayView, it: TodayItem): string | null {

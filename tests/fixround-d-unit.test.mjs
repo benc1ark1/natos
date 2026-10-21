@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EVENTS, GOALS, NEXT, PLANNING, SCHOOL, TASKS, THIS, TODAY, day } from './support/nat-real.mjs'
 import { todayFromSaved } from '../lib/today/build.ts'
-import { clockOf, eveningHtml, todayButtons, todayHtml } from '../lib/today/message.ts'
+import { clockOf, eveningHtml, itemLines, todayButtons, todayHtml } from '../lib/today/message.ts'
 import { holidayChanges } from '../lib/today/holidays.ts'
 import { dayItems } from '../lib/day.ts'
 import { renderToday, renderWeek } from '../lib/telegram/views.ts'
@@ -133,6 +133,23 @@ test('18 · "what’s on today?" on Fri 23 Oct: the planner’s upper 12:30 is n
   ], now: new Date('2026-10-23T07:00:00Z') })).html
   assert.match(fri, /🗓 <b>Plan<\/b>\n1\. 📚 ACT reading: timed passages <i>· 40m<\/i>\n2\. 🏋️ Upper @ PureGym <i>· 1h<\/i>/)
   assert.doesNotMatch(fri, /12:30/)
+})
+
+test('18 · SCHOOL week, Tue 3 Nov: the planner’s core 17:30 before speed at his set time 18:30 (one item): speed’s 18:30 still shows', () => {
+  const tue = day(SCHOOL, 1)
+  const plan = today(tue, [
+    blk(15, '17:30', '18:00', 'Core', { kind: 'training' }),
+    blk(16, '18:30', '19:30', 'Speed + circuits @ Owen', { kind: 'training' }),
+  ])
+  assert.equal(plan.items.length, 1, 'both sessions are one Today item')
+  assert.equal(plan.items[0].fixed, true, 'one of its sessions is at his set time')
+  assert.equal(clockOf(plan.items[0]), '18:30', 'the fixed session’s time, not the planner’s 17:30')
+  assert.deepEqual(itemLines(plan.items[0]).slice(0, 1), ['<b>18:30</b> 🏋️ Core + Speed + circuits <i>· 1h 30m</i>'])
+  assert.deepEqual(todayButtons(plan).map((r) => r[0].text), ['☐ 18:30 Core + Speed + circuits'])
+  assert.doesNotMatch(todayHtml(plan), /17:30/)
+  // only the planner's sessions: no clock time
+  const core = today(tue, [blk(17, '17:30', '18:00', 'Core', { kind: 'training' })])
+  assert.equal(clockOf(core.items[0]), null)
 })
 
 // ---------------------------------------------------------------------------
