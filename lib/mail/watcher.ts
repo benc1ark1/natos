@@ -177,8 +177,11 @@ export async function sortPending(sb: SupabaseClient, today = todayISO()): Promi
   const rules = (ruleRows ?? []) as MailRule[]
   const hwFrom = await homeworkFrom(sb, planning)
   // the email's text is kept only for homework (what to do goes in the task's notes); anything else is cleared
+  // (what came with the email, how it was addressed and whether it came through a group, stays in its details)
+  const kept = (e: EmailRow) => { const d = (e.details ?? {}) as { addressed?: unknown; list?: unknown }; return { ...(d.addressed ? { addressed: d.addressed } : {}), ...(d.list ? { list: d.list } : {}) } }
   const save = (e: EmailRow, patch: Record<string, unknown>) =>
-    sb.from('emails').update({ ...patch, ...(e.body && patch.status === 'sorted' && patch.kind !== 'homework' ? { body: null } : {}) }).eq('id', e.id)
+    sb.from('emails').update({ ...patch, ...('details' in patch ? { details: { ...kept(e), ...(patch.details as object) } } : {}),
+      ...(e.body && patch.status === 'sorted' && patch.kind !== 'homework' ? { body: null } : {}) }).eq('id', e.id)
   // his tutors and his school always set homework (only a plain calendar event stays an event)
   const asHomework = (e: EmailRow, hw: HomeworkSender, why: string) =>
     save(e, { status: 'sorted', kind: 'homework', flagged: e.flagged, why: `${hw === 'listed' ? 'homework sender (your setting)' : 'your school'}: ${why}`.slice(0, 200), attempts: e.attempts + 1 })
@@ -320,7 +323,9 @@ async function announce(sb: SupabaseClient, chatId: number, e: EmailRow, today: 
     // his tutors and his school: saved straight away (with ↩️ Undo) when it plainly sets work and isn't already a task;
     // anyone else, or a likely duplicate: a card, nothing saved until ✅
     const setsWork = !deadline.guess || HOMEWORK_WORDS.test(`${e.subject ?? ''} ${e.body ?? e.snippet ?? ''}`)
-    if (!hw || !setsWork || duplicates.length) return proposalCard(sb, chatId, emailText(e), proposal, duplicates, { head: head(e, '📧') })
+    // (sent to a group he's in, like year13@: a year bulletin can read like homework, so it's a card he saves himself)
+    const viaGroup = !!(e.details as { list?: boolean } | null)?.list
+    if (!hw || viaGroup || !setsWork || duplicates.length) return proposalCard(sb, chatId, emailText(e), proposal, duplicates, { head: head(e, '📧') })
     const saved = await saveProposal(sb, proposal, emailText(e), [])
     if (saved.error || !saved.task) {
       proposal.notes.push(`Couldn’t save it by itself (${(saved.error ?? 'not saved').replace(' Your text is still in the box.', '')}): tap ✅ Save.`)

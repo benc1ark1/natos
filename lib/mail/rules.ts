@@ -102,7 +102,7 @@ const sameBox = (a: string) => {
 
 // "all" and "set" only as their own part ("all-staff", "all@", "maths.set2"); "upper", "lower" and "house" only at the
 // start of a part ("upper6", "lower-school"), so Ms Hall, Allen, Seth and Ms Flowers are people
-const GROUP = /\+|\d|group|list|class|form|sixth|dept|student|staff|parent|everyone|members|team|year|(^|[._-])(upper|lower|house)|(^|[._-])all([._-]|$)|(^|[._-])set([._-]|$)/
+const GROUP = /\+|\d|group|list|class|form|sixth|dept|student|pupil|tutee|prefect|leaver|senior|junior|squad|teacher|staff|parent|everyone|members|team|year|(^|[._-])(upper|lower|house)|(^|[._-])all([._-]|$)|(^|[._-])set([._-]|$)/
 // a subject's list ("physics@", "maths-dept@", "cs.teachers@"): the subject as its own part of the name
 const SUBJECTS = new Set(['maths', 'math', 'mathematics', 'furthermaths', 'fm', 'physics', 'chemistry', 'biology', 'science', 'sciences',
   'computing', 'computerscience', 'compsci', 'cs', 'english', 'history', 'geography', 'economics', 'politics', 'psychology', 'philosophy',
