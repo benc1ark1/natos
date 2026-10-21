@@ -10,7 +10,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordUsage, budget } from '../ai/usage'
 import { loadPlannerContext, type PlannerContext } from '../ask/server'
 import type { AskAnswer } from '../ask/types'
-import { todayISO, weekStartISO } from '../time'
+import { addDays, todayISO, weekStartISO } from '../time'
+import { namedDates } from '../capture/server'
 import { esc, type Button } from './api'
 import { botAsked, looksLikeChange, looksLikeMeta, looksLikePartialEdit, route, think, triage, type Decision } from './brain'
 import { checkActions, loadRows } from './actions'
@@ -202,10 +203,23 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   const ownMessage = card && card.status !== 'editing' && !looksLikePartialEdit(message) && (
     (card.kind === 'capture' && res.decision.intent === 'correction' && (looksDone(message) || unrelated(card.payload.proposal?.title ?? card.text)))
     || (card.kind === 'action' && ['correction', 'instruction'].includes(res.decision.intent) && unrelated(card.text)))
-  if (ownMessage) {
+  // A plan card waiting (Your week, a training plan, a day plan): only a change to the plan itself re-plans it. A change
+  // to saved records ("Owen moved to Wed 28 Oct 11:00", "physics homework is due Friday now"), a 'done' report, a plan
+  // for another week or a "correction" that isn't about the plan is its own message (fix round, item 10: before, every
+  // plan / correction / instruction went into the waiting week card). The week card re-fits after that change's ✅.
+  // (his saved tasks, events and tests: a record he names that isn't on the card makes a date / 'due' / 'moved' his own change)
+  // (events from his Google calendars too, which have no ref: "Owen")
+  const records = [...[...ctx.refs.values()].filter((r) => r.kind === 'task' || r.kind === 'event' || r.kind === 'goal').map((r) => r.title),
+    ...data.events.filter((e) => !e.archived_at).map((e) => e.title)]
+  const ownPlan = !ownMessage && card?.kind === 'plan' && card.status !== 'editing' && !(card.payload as { add?: boolean }).add
+    && ['plan', 'correction', 'instruction'].includes(res.decision.intent) && !editsPlan(message, res.decision, card, today, records)
+  // (a record change the AI labelled 'plan', or an instruction it found no change in, is read again without the card too)
+  const reread = ownPlan && (res.decision.intent === 'correction'
+    || (namesRecordChange(message, today, records, card) && !(res.decision.intent === 'instruction' && (res.decision.actions.length || res.decision.asks.length))))
+  if (ownMessage || reread) {
     const again = await ask(null)
     if (again.ok) { res = again; card = null }
-  }
+  } else if (ownPlan) card = null   // (its changes are about saved records already: no need to ask again)
 
   const d = res.decision
   // A change to a day plan that isn't applied yet: plan that day again with his words. (Not the small add-only cards:
@@ -268,11 +282,11 @@ async function proposeChanges(sb: SupabaseClient, chatId: number, message: strin
   const said = [...history.filter((t) => t.role === 'nat').map((t) => t.text), message].join('\n')
   const optionActions = d.asks.flatMap((q) => q.options.flatMap((o) => o.actions))
   const rows = await loadRows(sb, [...d.actions, ...optionActions], ctx)
-  const { actions, problems } = checkActions(d.actions, ctx, rows, said, todayISO())
+  const { actions, problems } = checkActions(d.actions, ctx, rows, said, todayISO(), message)
   // a quick-tap question per unclear part: each answer's changes are checked now, like the rest (lib/telegram/cards.ts)
   const asks: Ask[] = d.asks.map((q) => ({
     question: q.question,
-    options: q.options.map((o) => ({ label: o.label, actions: checkActions([...d.actions, ...o.actions], ctx, rows, said, todayISO()).actions.slice(actions.length) }))
+    options: q.options.map((o) => ({ label: o.label, actions: checkActions([...d.actions, ...o.actions], ctx, rows, said, todayISO(), message).actions.slice(actions.length) }))
       .filter((o) => o.actions.length),
   })).filter((q) => q.options.length)
   if (!actions.length && asks.length) {
@@ -341,6 +355,80 @@ const wordsOf = (s: string) => new Set(s.toLowerCase().replace(/[’']/g, '').sp
 /** A report that something is finished ("Sam's CS homework is done", "finished the physics sheet", "did my reading"). */
 export const looksDone = (message: string) =>
   /\b(is|are|'s|’s|was|were|all|now)\s+(done|finished|complete|completed|handed in|submitted|sent)\b|^(done|finished|completed|did|handed in|submitted)\b/i.test(message.trim())
+
+// Words that change a plan card itself: "no physics tonight", "start at 7", "lighter on Fri", "upper Sat at PureGym"
+const PLAN_EDIT = /^(?:no|not|without|less|more|fewer|lighter|heavier|start|finish|end|only|skip|swap|instead|keep|drop|add|put|move|make it|i only have|i've got|ive got)\b|\b(?:instead|lighter|heavier|earlier|later|tired|ill|sick|wrecked|knackered|exhausted)\b/i
+
+/** "plan next week" while this week's card waits (or "this week" while next week's waits): another week's plan. */
+export function otherWeek(message: string, card: Pick<Pending, 'payload'>, today: string): boolean {
+  const from = (card.payload as { week?: { from?: string } }).week?.from
+  if (!from) return false
+  const next = addDays(weekStartISO(today), 7)
+  if (/\bnext week\b/i.test(message)) return weekStartISO(from) < next
+  if (/\bthis week\b/i.test(message)) return weekStartISO(from) >= next
+  return false
+}
+
+// A change to a saved record, not to a plan card: a new task ("add physics homework due Friday"), a standing rule or
+// setting ("from now on"): always. A due date, a move or a cancellation, or a new date and time: only when it names a
+// saved record that isn't on the card (fix round item 10, second pass: "move upper to Sat 31 Oct 3pm" edits the card)
+const NEW_TASK = /^(?:add|new|create)\b.*\b(?:task|homework|hw|test|exam|essay|coursework|reminder)\b|\bremind me\b/i
+const RECORD_DUE = /\b(?:due|deadline|hand(?:ed)?\s+in)\b/i
+const RECORD_EVENT = /\b(?:moved|cancelled|canceled|rescheduled|postponed|called off)\b/i
+const RECORD_SETTING = /\b(?:from now on|by default|settings?)\b/i
+// a deadline that changed ("physics homework is due Friday now"), not one that's context ("not due till Friday", "essay due Friday")
+const DUE_CHANGE = /\b(?:is|are|now)\s+due\b|\bdue date\b|\bdeadline (?:is|moved|changed)\b/i
+
+/** The sessions and blocks on a plan card (their names: "Speed + circuits @ Owen" is "Speed + circuits", the place isn't the session). */
+function cardTitles(card: Pick<Pending, 'payload'> | null | undefined): string[] {
+  const p = (card?.payload ?? {}) as { blocks?: { title?: string }[]; unplaced?: { title?: string }[]; yourWeek?: { training?: { needs?: { title?: string }[] } } }
+  return [...(p.blocks ?? []), ...(p.unplaced ?? []), ...(p.yourWeek?.training?.needs ?? [])].map((b) => (b.title ?? '').split(/ @ | · /)[0]).filter(Boolean)
+}
+
+// words too common to name one record: school, his subjects, kinds of work and training ("less physics Friday" is about
+// the card even though his calendar has "Physics" lessons every day)
+const GENERIC = new Set(['school', 'lesson', 'lessons', 'class', 'maths', 'math', 'further', 'physics', 'chemistry', 'biology', 'english', 'computer',
+  'science', 'act', 'smc', 'study', 'revision', 'homework', 'work', 'session', 'sessions', 'training', 'football', 'gym', 'upper', 'lower', 'body',
+  'speed', 'sprint', 'core', 'stretch', 'stretching', 'injury', 'prevention', 'heavy', 'light', 'plyo', 'circuits', 'match', 'game', 'test',
+  'exam', 'mock', 'block', 'blocks', 'day', 'week', 'today', 'tonight', 'tomorrow', 'morning', 'evening', 'afternoon', 'night'])
+
+/** Does his message name one of these saved records (a task, event or test title) by a distinctive word that isn't a
+ *  session or block on the card ("Owen" the calendar event: yes; "upper", a session on the card, or "physics": no)? */
+export function namesRecord(message: string, records: string[], card?: Pick<Pending, 'payload'> | null): boolean {
+  const onCard = wordsOf(cardTitles(card).join(' '))
+  const said = wordsOf(message)
+  return records.some((r) => [...wordsOf(r)].some((w) => !GENERIC.has(w) && !onCard.has(w) && said.has(w)))
+}
+
+/** Does his message name a change to a saved task, event or setting ("Owen moved to Wed 28 Oct 11:00", "add physics
+ *  homework due Friday")? Then it's its own message even while a plan card waits, whatever the AI called it.
+ *  `records`: his saved tasks', events' and tests' titles; `card`: the plan card waiting. */
+export function namesRecordChange(message: string, today: string, records: string[] = [], card?: Pick<Pending, 'payload'> | null): boolean {
+  const m = message.trim()
+  if (NEW_TASK.test(m) || RECORD_SETTING.test(m) || DUE_CHANGE.test(m)) return true
+  // a calendar date with a clock time ("Owen speed Wed 28 Oct 11:00"): an event's new day and time
+  const dateTime = namedDates(m, today).length > 0 && /\b\d{1,2}(?:[:.]\d{2}|\s*(?:am|pm))\b/i.test(m)
+  if (!(RECORD_DUE.test(m) || RECORD_EVENT.test(m) || dateTime)) return false
+  return namesRecord(m, records, card)
+}
+
+/**
+ * Does his message change the plan card waiting (re-plan it), or is it a message of its own? Only an edit of the card
+ * itself is a change (move, drop or swap a block or session on it, "redo", "less study Friday"; a plan request unless
+ * it's for another week). Changes to saved records (even ones the AI labelled 'plan'), 'done' reports and new items
+ * never are; a "correction" is only when it reads like a change to a plan or names a session on the card.
+ */
+export function editsPlan(message: string, d: Pick<Decision, 'intent' | 'actions' | 'asks'>, card: Pick<Pending, 'payload'>, today: string, records: string[] = []): boolean {
+  if (looksDone(message)) return false
+  if (namesRecordChange(message, today, records, card)) return false
+  if (d.intent === 'plan') return !otherWeek(message, card, today)
+  if (d.intent === 'instruction') return !d.actions.length && !d.asks.length
+  if (d.intent !== 'correction') return false
+  if (PLAN_EDIT.test(message.trim())) return true
+  const blocks = ((card.payload as { blocks?: { title: string; kind?: string }[] }).blocks ?? [])
+  const names = blocks.filter((b) => b.kind === 'training').map((b) => b.title.split(' @ ')[0]).join(' ')
+  return message.trim().split(/\s+/).length <= 6 && sharesWords(names, message)
+}
 
 /** Do two texts share a real word ("Chemistry notes" and "Chemistry notes due Friday, 30 min")? */
 export function sharesWords(a: string, b: string): boolean {

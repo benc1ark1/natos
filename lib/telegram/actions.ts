@@ -106,7 +106,8 @@ export async function loadRows(sb: SupabaseClient, raw: RawAction[], ctx: Planne
 const grounded = (words: string, said: string) => { const w = norm(words); return w.length >= 3 && norm(said).includes(w) }
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T12:00:00Z`))
 
-export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, said: string, today: string): { actions: Action[]; problems: string[] } {
+/** `said`: his message and what he said in the last 30 minutes; `message`: his message alone (when it isn't `said`). */
+export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, said: string, today: string, message: string = said): { actions: Action[]; problems: string[] } {
   const actions: Action[] = []
   const problems: string[] = []
   const finished = new Set<string>()        // tasks completed or dropped in this card: nothing else to do to them
@@ -138,7 +139,7 @@ export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, 
       const sameCardPlaces = raw.filter((x) => x.op === 'place_new' || x.op === 'event_weekly' || x.op === 'event_new')
         .map((x) => Object.fromEntries((x.value ?? '').split(';').map((y) => y.split('=').map((z) => z.trim())))[x.op === 'place_new' ? 'name' : 'place']).filter(Boolean)
       const placeNews = raw.filter((x) => x.op === 'place_new').map((x) => Object.fromEntries((x.value ?? '').split(';').map((y) => y.split('=').map((z) => z.trim()))).name).filter(Boolean)
-      const r = checkC2(op, { ...a, date_to: a.date_to ?? '', time_to: a.time_to ?? '', sameCardPlaces, placeNews } as typeof a & { date_to: string; time_to: string }, ref, c2, (w) => grounded(w, said), today)
+      const r = checkC2(op, { ...a, date_to: a.date_to ?? '', time_to: a.time_to ?? '', sameCardPlaces, placeNews, said, message } as typeof a & { date_to: string; time_to: string }, ref, c2, (w) => grounded(w, said), today)
       if (r.problem) problems.push(r.problem)
       if (r.action) actions.push(r.action)
       continue
