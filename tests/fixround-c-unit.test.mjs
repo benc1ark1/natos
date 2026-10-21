@@ -276,8 +276,8 @@ test('10 (third pass): a saved record NOT on the card (Owen, the calendar event)
     assert.equal(namesRecordChange('Vlad mechanics questions are due Friday now', TODAY, RECORDS_EN, card), true)
     assert.equal(namesRecordChange('Chemistry corrections due Friday', TODAY, RECORDS_EN, card), true)
   }
-  // physics with no physics block on the card: the Physics task (and his Physics lessons) are records, so its own
-  assert.equal(namesRecordChange('physics is not due till Friday', TODAY, RECORDS, weekCard(THIS)), true)
+  // "physics" alone is too common to name one record (his Physics lessons are every day): the AI's label decides
+  assert.equal(namesRecordChange('physics is not due till Friday', TODAY, RECORDS, weekCard(THIS)), false)
 })
 
 test('13 (third pass): his message on more lines (“Owen moved to Wed 28 Oct”, a new line, “11:00”) keeps Wed 28 Oct; a date he said earlier isn’t used', () => {
@@ -325,4 +325,16 @@ test('14 (third pass): “Dinner @ Nando’s” (a place he hasn’t saved) neve
   assert.equal(gym.title, 'Upper · PureGym')
   const named = checkC2('event_weekly', { op: 'event_weekly', value: 'name=Dinner; place=Nando\'s Finchley', date: '', date_to: '', time: '19:00', time_to: '', number: 0, words: 'every Friday' }, undefined, r, () => true, TODAY).action
   assert.equal(named.patch.new_place, 'Nando\'s Finchley')
+})
+
+test('item 10 · his calendar’s everyday words (School, Maths, Physics, football) never make a card edit his own change; a distinctive name (Owen) does', async () => {
+  const { namesRecordChange: change } = await import('../lib/telegram/converse.ts')
+  const records = ['School', 'Maths', 'Physics', 'School football', 'Football training', 'Owen', 'Physics: SHM booklet']
+  const card = { payload: { blocks: [{ title: 'Speed + circuits @ Owen', kind: 'training' }, { title: 'Upper @ PureGym', kind: 'training' }, { title: 'Physics: SHM booklet', kind: 'focus' }] } }
+  for (const m of ['less physics Friday, move it to Sat 31 Oct 3pm', 'no maths after school on Thu 29 Oct at 5pm', 'football moved, so upper Sat 31 Oct 15:00',
+    'no physics tonight, it is not due till Friday', 'more English Thursday, essay due Friday'])
+    assert.equal(change(m, '2026-10-21', records, card), false, m)
+  // "@ Owen" on the card is a place, not the session: his Owen event is still a record
+  assert.equal(change('Owen moved to Wed 28 Oct 11:00', '2026-10-21', records, card), true)
+  assert.equal(change('the SHM booklet is due Friday now', '2026-10-21', records, card), true)
 })

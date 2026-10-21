@@ -376,19 +376,28 @@ const NEW_TASK = /^(?:add|new|create)\b.*\b(?:task|homework|hw|test|exam|essay|c
 const RECORD_DUE = /\b(?:due|deadline|hand(?:ed)?\s+in)\b/i
 const RECORD_EVENT = /\b(?:moved|cancelled|canceled|rescheduled|postponed|called off)\b/i
 const RECORD_SETTING = /\b(?:from now on|by default|settings?)\b/i
+// a deadline that changed ("physics homework is due Friday now"), not one that's context ("not due till Friday", "essay due Friday")
+const DUE_CHANGE = /\b(?:is|are|now)\s+due\b|\bdue date\b|\bdeadline (?:is|moved|changed)\b/i
 
-/** The sessions and blocks on a plan card (their titles). */
+/** The sessions and blocks on a plan card (their names: "Speed + circuits @ Owen" is "Speed + circuits", the place isn't the session). */
 function cardTitles(card: Pick<Pending, 'payload'> | null | undefined): string[] {
   const p = (card?.payload ?? {}) as { blocks?: { title?: string }[]; unplaced?: { title?: string }[]; yourWeek?: { training?: { needs?: { title?: string }[] } } }
-  return [...(p.blocks ?? []), ...(p.unplaced ?? []), ...(p.yourWeek?.training?.needs ?? [])].map((b) => b.title ?? '').filter(Boolean)
+  return [...(p.blocks ?? []), ...(p.unplaced ?? []), ...(p.yourWeek?.training?.needs ?? [])].map((b) => (b.title ?? '').split(/ @ | · /)[0]).filter(Boolean)
 }
 
-/** Does his message name one of these saved records (a task, event or test title) by a word that isn't a session or
- *  block on the card ("Owen" the calendar event: yes; "upper", a session on the card: no)? */
+// words too common to name one record: school, his subjects, kinds of work and training ("less physics Friday" is about
+// the card even though his calendar has "Physics" lessons every day)
+const GENERIC = new Set(['school', 'lesson', 'lessons', 'class', 'maths', 'math', 'further', 'physics', 'chemistry', 'biology', 'english', 'computer',
+  'science', 'act', 'smc', 'study', 'revision', 'homework', 'work', 'session', 'sessions', 'training', 'football', 'gym', 'upper', 'lower', 'body',
+  'speed', 'sprint', 'core', 'stretch', 'stretching', 'injury', 'prevention', 'heavy', 'light', 'plyo', 'circuits', 'match', 'game', 'test',
+  'exam', 'mock', 'block', 'blocks', 'day', 'week', 'today', 'tonight', 'tomorrow', 'morning', 'evening', 'afternoon', 'night'])
+
+/** Does his message name one of these saved records (a task, event or test title) by a distinctive word that isn't a
+ *  session or block on the card ("Owen" the calendar event: yes; "upper", a session on the card, or "physics": no)? */
 export function namesRecord(message: string, records: string[], card?: Pick<Pending, 'payload'> | null): boolean {
   const onCard = wordsOf(cardTitles(card).join(' '))
   const said = wordsOf(message)
-  return records.some((r) => [...wordsOf(r)].some((w) => !onCard.has(w) && said.has(w)))
+  return records.some((r) => [...wordsOf(r)].some((w) => !GENERIC.has(w) && !onCard.has(w) && said.has(w)))
 }
 
 /** Does his message name a change to a saved task, event or setting ("Owen moved to Wed 28 Oct 11:00", "add physics
@@ -396,7 +405,7 @@ export function namesRecord(message: string, records: string[], card?: Pick<Pend
  *  `records`: his saved tasks', events' and tests' titles; `card`: the plan card waiting. */
 export function namesRecordChange(message: string, today: string, records: string[] = [], card?: Pick<Pending, 'payload'> | null): boolean {
   const m = message.trim()
-  if (NEW_TASK.test(m) || RECORD_SETTING.test(m)) return true
+  if (NEW_TASK.test(m) || RECORD_SETTING.test(m) || DUE_CHANGE.test(m)) return true
   // a calendar date with a clock time ("Owen speed Wed 28 Oct 11:00"): an event's new day and time
   const dateTime = namedDates(m, today).length > 0 && /\b\d{1,2}(?:[:.]\d{2}|\s*(?:am|pm))\b/i.test(m)
   if (!(RECORD_DUE.test(m) || RECORD_EVENT.test(m) || dateTime)) return false
