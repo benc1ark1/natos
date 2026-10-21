@@ -13,7 +13,7 @@ import { trainingTypes } from '../training'
 import { moreSettings } from '../settings'
 import { parseSessionTitle } from '../setup'
 import { addDays } from '../time'
-import { savedWeek, weekEvents } from './weekread'
+import { isWeekRow, sameThing, savedWeek, weekEvents, weekNoteWithout } from './weekread'
 import { isLowRecovery, whoopDay, type WhoopDay } from '../whoop/sync'
 import { dateISOOf, minutesOf, timeOf, weekStartISO, zonedToUTC } from '../time'
 import { mentalDays, type MentalOverride } from '../mental'
@@ -141,11 +141,19 @@ export function clashOptions(w: WeekWorld, actions: Action[]): { clash: string; 
     const start = (p.new_start as string) ?? (p.starts_at ? timeOf(String(p.starts_at)) : null) ?? (p.start_time as string)
     const end = (p.new_end as string) ?? (p.ends_at ? timeOf(String(p.ends_at)) : null) ?? (p.end_time as string)
     if (!date || !start || !end) continue
-    const other = overlapOf(after.events, after.changes, a.id ?? 'new', date, start, end)
+    // the same session in the week he typed ("Owen" Wed 11:00) isn't a clash: they're one session
+    const moved = after.events.find((e) => e.id === (a.id ?? 'new'))
+    const events = after.events.filter((e) => !isWeekRow(e.id) || !sameThing(e.title, a.title, e.training_type ?? null, moved?.training_type ?? ''))
+    const other = overlapOf(events, after.changes, a.id ?? 'new', date, start, end)
     if (!other) continue
     const len = minutesOf(end) - minutesOf(start)
     const free = nearestFree(after.events, after.changes, a.id ?? 'new', date, start, len, w.settings)
-    const cancelOther: Action = other.event.repeat_days?.length
+    // an item of the week he typed is left out of that week note (never sent to the database as an event id)
+    const note = isWeekRow(other.event.id) ? weekNoteWithout(other.event.id, w.sent ?? []) : null
+    const cancelOther: Action | null = note
+      ? { op: 'event_cancel', table: 'week_notes', id: note.id, title: other.event.title, line: `<b>${esc(other.event.title)}</b> that day: → left out of the week you sent`, patch: { items: note.items } }
+      : other.event.id.includes(':') ? null   // another in-memory row (his usual game): nothing to cancel in the database
+      : other.event.repeat_days?.length
       ? { op: 'event_cancel', table: 'event_exceptions', id: other.event.id, title: other.event.title, usualDate: other.usualDate, line: `<b>${esc(other.event.title)}</b> that day: → cancelled <i>(just this week)</i>`, patch: { cancelled: true, new_date: other.change?.new_date ?? null, new_start: other.change?.new_start ?? null, new_end: other.change?.new_end ?? null } }
       : { op: 'event_cancel', table: 'events', id: other.event.id, title: other.event.title, line: `<b>${esc(other.event.title)}</b>: → cancelled <i>(archived, can be restored)</i>`, patch: { archived_at: '__now__' } }
     const shifted: Action[] | null = free ? actions.map((x) => {
@@ -157,7 +165,7 @@ export function clashOptions(w: WeekWorld, actions: Action[]): { clash: string; 
     return {
       clash: `⚠️ <b>Clash</b>: ${start}–${end} is on top of ${esc(other.event.title)} (${other.start}${other.end ? `–${other.end}` : ''}).`,
       options: [
-        { label: `${a.title} at ${start}, and cancel ${other.event.title} that day`, actions: [...actions, cancelOther] },
+        cancelOther ? { label: `${a.title} at ${start}, and cancel ${other.event.title} that day`, actions: [...actions, cancelOther] } : { label: `${a.title} at ${start} anyway`, actions },
         shifted ? { label: `${a.title} at ${free} instead`, actions: shifted } : { label: `Leave ${a.title} where it was`, actions: actions.filter((x) => x !== a) },
       ],
     }

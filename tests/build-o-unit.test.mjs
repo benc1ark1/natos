@@ -40,7 +40,7 @@ function world({ planning = {}, events = NAT, changes = [], goals = [], tasks = 
 const busyOn = (w, date) => expandEvents(w.events, date, date, w.changes).filter((o) => o.date === date && !o.cancelled && o.event.is_busy && o.start)
 /** Checks every plan must pass: no clash with busy time (travel and buffer included), heavy before 21:30, routines kept,
  *  Friday evening free and Friday light, nothing on the game day, a reason for each session. */
-function sane(w, p, label) {
+function sane(w, p, label, opts = {}) {
   for (const s of p.placed) {
     const a = minutesOf(s.start) - (s.before ?? 0), b = minutesOf(s.end) + (s.after ?? 0)
     for (const o of busyOn(w, s.date)) {
@@ -52,7 +52,8 @@ function sane(w, p, label) {
     if (s.intensity === 'heavy') assert.ok(minutesOf(s.end) <= minutesOf('21:30'), `${label}: heavy ${s.title} ends by 21:30`)
     if (isoDow(s.date) === 5) {
       assert.ok(minutesOf(s.end) + (s.after ?? 0) <= minutesOf('18:00'), `${label}: Friday evening stays free (${s.title})`)
-      assert.equal(s.intensity, 'light', `${label}: only light on Friday (${s.title})`)
+      if (opts.friday !== 'weighed') assert.equal(s.intensity, 'light', `${label}: only light on Friday (${s.title})`)
+      else if (s.intensity !== 'light') assert.match(s.why, /Friday: keep training light/, `${label}: a Friday session that isn’t light says so (${s.title})`)
     }
     assert.ok(s.why && s.why.length > 5, `${label}: ${s.title} has a reason`)
   }
@@ -106,8 +107,11 @@ test('O: a test week: no hard training on the test eve or a high-🧠 day', () =
   const eve = w.mental.find((m) => m.date === d(2))
   assert.ok(eve.testEve && eve.items.some((i) => /Physics mock tomorrow/.test(i.what)), 'Wed is the eve of the mock')
   const p = planTraining(w)
-  sane(w, p, 'test')
-  assert.ok(!p.placed.some((s) => s.date === d(2) && s.intensity === 'heavy'), 'nothing heavy on the test eve')
+  // fix round item 2: the mock day itself has no training (heavy lower used to go on it) and the eve is light only, so
+  // in this full week Friday's light rule (a weighed guideline) can give way: it's said on the card
+  sane(w, p, 'test', { friday: 'weighed' })
+  assert.ok(!p.placed.some((s) => s.date === d(3)), 'nothing on the test day')
+  assert.ok(!p.placed.some((s) => s.date === d(2) && s.intensity !== 'light'), 'only light on the test eve')
   // the night before the test is earlier
   assert.ok(minutesOf(w.settings.dayBounds(d(2)).end) < minutesOf(w.settings.dayBounds(d(1)).end), 'an earlier night before the test')
 })

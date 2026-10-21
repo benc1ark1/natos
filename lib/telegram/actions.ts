@@ -47,7 +47,7 @@ export const ACTION_SCHEMA = {
   additionalProperties: false,
 }
 
-type Table = 'tasks' | 'reminders' | 'projects' | 'target_weeks' | 'events' | 'event_exceptions' | 'goals' | 'weekly_targets' | 'training_rules' | 'places' | 'travel_times' | 'profiles' | 'integrations' | 'pipeline_stages' | 'topics' | 'mistakes' | 'guides' | 'guide_logs' | 'mail_rules' | 'load_costs' | 'plan_blocks' | 'habit_items' | 'subjects'
+type Table = 'tasks' | 'reminders' | 'projects' | 'target_weeks' | 'events' | 'event_exceptions' | 'goals' | 'weekly_targets' | 'training_rules' | 'places' | 'travel_times' | 'profiles' | 'integrations' | 'pipeline_stages' | 'topics' | 'mistakes' | 'guides' | 'guide_logs' | 'mail_rules' | 'load_costs' | 'plan_blocks' | 'habit_items' | 'subjects' | 'week_notes'
 const NOW = '__now__'   // filled in with the time the change is applied
 /** Changes one card can hold (a long message about several sessions: each session, place and journey). */
 export const MAX_ACTIONS = 16

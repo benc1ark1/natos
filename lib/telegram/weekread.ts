@@ -15,7 +15,10 @@ export type WeekItem = {
   date: string; start: string; end: string; title: string
   kind: 'training' | 'school' | 'tutor' | 'other'
   training_type: string; intensity: '' | 'light' | 'moderate' | 'heavy'; travel_minutes: number; guessed_time?: boolean
+  note?: WeekNoteRef   // a saved item: its week note (savedWeek), so one item can be left out of it
 }
+/** Where a saved item came from: the week_notes row, its place in that row's items, and the items as saved. */
+export type WeekNoteRef = { id: string; i: number; items: unknown[] }
 
 export const WEEK_READ_PROMPT = `You read the week Nat (a UK sixth-form student who plays football and trains in the gym) has typed out, into dated items. You don't plan anything and you never add things he didn't say.
 
@@ -114,17 +117,31 @@ export async function saveWeek(sb: SupabaseClient, range: { from: string; to: st
 
 /** The week he sent for this range, if any (none before build-n.sql runs). */
 export async function savedWeek(sb: SupabaseClient, range: { from: string; to: string }, types: TypeDef[]): Promise<WeekItem[]> {
-  const { data, error } = await sb.from('week_notes').select('items,week_from,week_to').is('archived_at', null)
+  const { data, error } = await sb.from('week_notes').select('id,items,week_from,week_to').is('archived_at', null)
     .lte('week_from', range.to).gte('week_to', range.from).order('created_at', { ascending: false }).limit(1)
   if (error || !data?.length) return []
-  return checkItems(data[0].items, range.from, range.to, types)
+  // each item remembers its note and its place in it (1️⃣ on a clash with it leaves just that item out)
+  const raw = Array.isArray(data[0].items) ? data[0].items as unknown[] : []
+  return raw.flatMap((x, i) => checkItems([x], range.from, range.to, types).map((it) => ({ ...it, note: { id: data[0].id as string, i, items: raw } })))
+    .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))
 }
 
-/** His week as calendar-like events (in memory only), leaving out what his calendar already has at that time. */
+/** A row of his typed week in the planner (weekEvents "week:N"): in memory only, never a database id. */
+export const isWeekRow = (id: string | null | undefined) => !!id && id.startsWith('week:')
+
+/** His week note without the item a "week:N" row is (1️⃣ on a clash with it): every other item kept; ↩️ Undo puts the
+ *  note back as it was. null when the row isn't a saved item. */
+export function weekNoteWithout(rowId: string, sent: { note?: WeekNoteRef }[]): { id: string; items: unknown[] } | null {
+  const note = isWeekRow(rowId) ? sent[Number(rowId.slice(5))]?.note : null
+  return note ? { id: note.id, items: note.items.filter((_, k) => k !== note.i) } : null
+}
+
+/** His week as calendar-like events (in memory only), leaving out what his calendar already has at that time. Row
+ *  "week:N" is items[N]. */
 export function weekEvents(items: WeekItem[], calendar: EventRow[], changes: EventException[]): EventRow[] {
-  return items.filter((it) => !expandEvents(calendar, it.date, it.date, changes).some((o) => o.start && o.event.is_busy && minutesOf(o.start) < minutesOf(it.end) && minutesOf(o.end ?? o.start) > minutesOf(it.start)
+  return items.map((it, i) => ({ it, i })).filter(({ it }) => !expandEvents(calendar, it.date, it.date, changes).some((o) => o.start && o.event.is_busy && minutesOf(o.start) < minutesOf(it.end) && minutesOf(o.end ?? o.start) > minutesOf(it.start)
     && sameThing(o.event.title, it.title, o.event.training_type ?? null, it.training_type)))
-    .map((it, i) => ({
+    .map(({ it, i }) => ({
       id: `week:${i}`, title: it.title, category_id: null, subject_id: null, location: null,
       starts_at: zonedToUTC(it.date, it.start), ends_at: zonedToUTC(it.date, it.end), repeat_days: null, start_time: null, end_time: null, repeat_from: null, repeat_until: null,
       is_busy: true, travel_minutes: it.travel_minutes, target_id: null, archived_at: null,
@@ -134,7 +151,8 @@ export function weekEvents(items: WeekItem[], calendar: EventRow[], changes: Eve
 }
 
 const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter((w) => w.length > 2))
-function sameThing(a: string, b: string, ta: string | null, tb: string): boolean {
+/** The same session by its type or a shared word ("Owen training" and his typed "Owen"). */
+export function sameThing(a: string, b: string, ta: string | null, tb: string): boolean {
   if (ta && tb && ta === tb) return true
   const x = words(a), y = words(b)
   return [...x].some((w) => y.has(w))

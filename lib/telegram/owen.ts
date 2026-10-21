@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { expandEvents } from '../events'
 import { mentalDays } from '../mental'
-import { activeSessions, gameEvents, owenDays, DAY3, type DayMap } from '../setup'
+import { activeSessions, boundsOf, gameEvents, owenDays, shapesFor, DAY3, type DayMap } from '../setup'
+import { isHoliday } from '../today/holidays'
 import { addDays, isoDow, todayISO, weekStartISO } from '../time'
 import { planTraining, type WeekWorld } from '../week'
 import type { OptPlan } from '../optimiser'
@@ -35,26 +36,89 @@ export function weeklyOnly(events: EventRow[], from: string, to: string): EventR
   return events.filter((e) => e.external_source !== 'setup' && e.external_source !== 'week' && (e.external_source === 'google' ? titles.has(norm(e.title)) : !!e.repeat_days?.length))
 }
 
-/** The best days for Owen's sessions in a typical week (the coming Mon–Sun, with only what repeats). */
-export async function typicalOwenPlan(sb: SupabaseClient, data: ViewData): Promise<{ plan: OptPlan; days: DayMap; from: string }> {
-  const from = addDays(weekStartISO(data.today), 7), to = addDays(from, 6)
-  const world = await loadWorld(sb, data, { from, to })
-  // compared with what Owen does now: the days already agreed with him, else his own suggestion
-  const saved = owenDays(data.planning)
-  const planning = { ...((data.planning ?? {}) as Record<string, unknown>), owenDays: null, gameWeeks: {}, ...(saved ? { owenBaseline: saved } : {}) }
-  const events = [...weeklyOnly(world.events, from, to), ...gameEvents(from, to, planning, () => false)]
-  const w: WeekWorld = {
-    ...world, events, planned: [], energy: new Map(), tiredWhy: undefined, whoop: null, done: [], logs: [], weekCounts: [], pins: undefined, sent: [],
-    planning, mental: mentalDays({ from: addDays(from, -1), to, planning, events, changes: world.changes, goals: [], tasks: [], blocks: [] }),
+/** A typical week is a school week: the first one from next week with no holiday on a weekday (in the holidays school,
+ *  school football and Owen's days are different, so a half-term week says nothing about his usual days). */
+export function typicalFrom(today: string, planning: unknown): string {
+  const next = addDays(weekStartISO(today), 7)
+  for (let from = next, i = 0; i < 10; from = addDays(from, 7), i++) {
+    if (![0, 1, 2, 3, 4].some((d) => isHoliday(planning, addDays(from, d)))) return from
   }
-  const plan = planTraining(w, { compare: true })
-  const sessions = activeSessions(planning).filter((s) => s.owen)
+  return next
+}
+
+/**
+ * The typical week as the planner's world (no database): only what repeats, the game on his usual day, no one-off
+ * changes, no tests, no Whoop, no temporary rules ("upper 3× until 1 Nov", this week's game) and the term-time days.
+ * `keep`: Owen's days to plan with (his saved ones, Owen's sessions only); null = the optimiser picks them. His own
+ * sessions (upper) are free either way, so the two weeks compare like for like.
+ */
+export function typicalWorld(world: WeekWorld, keep: DayMap | null): WeekWorld {
+  const { from, to } = world
+  const raw = (world.planning ?? {}) as Record<string, unknown>
+  const saved = owenDays(raw)
+  const owenKeys = new Set(activeSessions(raw).filter((s) => s.owen).map((s) => s.key))
+  const days = Object.fromEntries(Object.entries(keep ?? {}).filter(([k]) => owenKeys.has(k)))
+  // compared with what Owen does now: the days already agreed with him, else his own suggestion
+  const planning = { ...raw, owenDays: Object.keys(days).length ? days : null, holidayOwenDays: null, holidaySessionTimes: null, upperWeeks: {}, gameWeeks: {}, ...(saved ? { owenBaseline: saved } : {}) }
+  const events = [...weeklyOnly(world.events, from, to), ...gameEvents(from, to, planning, () => false)]
+  const shapes = shapesFor(planning, events, [], [], addDays(from, -1), addDays(to, 1))
+  return {
+    ...world, events, changes: [], planned: [], energy: new Map(), tiredWhy: undefined, whoop: null, done: [], logs: [], weekCounts: [], pins: undefined, sent: [],
+    settings: { ...world.settings, dayBounds: boundsOf(shapes) },
+    planning, mental: mentalDays({ from: addDays(from, -1), to, planning, events, changes: [], goals: [], tasks: [], blocks: [] }),
+  }
+}
+
+/** Owen's sessions' days in a plan (a session stacked onto another one goes with it). */
+function daysOf(plan: OptPlan, planning: unknown): DayMap {
   const days: DayMap = {}
-  for (const s of sessions) {
+  for (const s of activeSessions(planning).filter((x) => x.owen)) {
     const list = plan.placed.filter((p) => plan.sessionOf[p.key] === s.key || (s.stackWith && plan.sessionOf[p.key] === s.stackWith)).map((p) => isoDow(p.date))
     if (list.length) days[s.key] = [...new Set(list)].sort()
   }
-  return { plan, days, from }
+  return days
+}
+
+export type TypicalOwen = { plan: OptPlan; days: DayMap; from: string; kept: OptPlan | null }
+
+/** The best days for Owen's sessions in a typical week (no database), and the same week on his saved days (`kept`). A
+ *  session with no good day keeps its saved day (✅ never wipes it). */
+export function typicalOwen(world: WeekWorld): TypicalOwen {
+  const saved = owenDays(world.planning)
+  const plan = planTraining(typicalWorld(world, null), { compare: true })
+  const kept = saved ? planTraining(typicalWorld(world, saved), { compare: false }) : null
+  const days = daysOf(plan, world.planning)
+  for (const s of activeSessions(world.planning).filter((x) => x.owen)) if (!days[s.key] && saved?.[s.key]) days[s.key] = saved[s.key]
+  return { plan, days, from: world.from, kept }
+}
+
+/** How much cheaper a week has to be before he's told to change Owen's days (one real problem avoided, not noise). */
+const BETTER = 10
+
+/**
+ * "Owen's days may need updating" only when it's genuinely better on a typical school week: every one of Owen's
+ * sessions placed at its usual intensity, a different day for a session he gave Owen, and his saved days either don't
+ * work that week or cost clearly more.
+ */
+export function owenUpdate(t: TypicalOwen, saved: DayMap, planning: unknown): boolean {
+  const owen = activeSessions(planning).filter((s) => s.owen)
+  const isOwen = (plan: OptPlan, key: string) => owen.some((s) => plan.sessionOf[key] === s.key || key.startsWith(`${s.key}#`))
+  if (!t.kept || t.plan.tbc.some((x) => isOwen(t.plan, x.key))) return false
+  if (t.plan.placed.some((x) => isOwen(t.plan, x.key) && x.intensity !== x.wanted)) return false
+  const changed = Object.keys(saved).filter((k) => owen.some((s) => s.key === k) && t.days[k] && JSON.stringify(saved[k]) !== JSON.stringify(t.days[k]))
+  if (!changed.length) return false
+  // his saved days that week: a session that couldn't go on its day, or went lighter
+  const broken = t.kept.tbc.some((x) => isOwen(t.kept!, x.key)) || t.kept.placed.some((x) => {
+    const k = t.kept!.sessionOf[x.key]
+    return !!saved[k] && owen.some((s) => s.key === k) && (!saved[k].includes(isoDow(x.date)) || x.intensity !== x.wanted)
+  })
+  return broken || t.plan.cost + BETTER <= t.kept.cost
+}
+
+/** The best days for Owen's sessions in a typical school week (the first one from next week, with only what repeats). */
+export async function typicalOwenPlan(sb: SupabaseClient, data: ViewData): Promise<TypicalOwen> {
+  const from = typicalFrom(data.today, data.planning)
+  return typicalOwen(await loadWorld(sb, data, { from, to: addDays(from, 6) }))
 }
 
 /** "Hi Owen, …": the days, plus what's fixed in his week, ready to copy. `week` (/owen, queue item 6): this week's
@@ -75,16 +139,19 @@ export function owenMessage(days: DayMap, planning: unknown, plan: OptPlan, week
 }
 
 /** The card: Owen's days with the reasons, the comparison, the message; ✅ saves them. `head`: a line on top (a re-check). */
-export async function proposeOwenDays(sb: SupabaseClient, chatId: number, data: ViewData, head?: string): Promise<boolean> {
-  const { plan, days } = await typicalOwenPlan(sb, data)
+export async function proposeOwenDays(sb: SupabaseClient, chatId: number, data: ViewData, head?: string, typical?: TypicalOwen): Promise<boolean> {
+  const { plan, days } = typical ?? await typicalOwenPlan(sb, data)
+  const saved = owenDays(data.planning)
   const sessions = activeSessions(data.planning).filter((s) => s.owen)
   if (!Object.keys(days).length) { await say(sb, chatId, 'I couldn’t fit Owen’s sessions into a typical week: check your set-up (“what do you still need to know?”).', undefined, { intent: 'question' }); return false }
-  const lines = [head ?? '🗓 <b>Days to give Owen</b>', '<i>Worked out on a typical week: school, the sessions that come every week, and the game on your usual day.</i>', '']
+  const lines = [head ?? '🗓 <b>Days to give Owen</b>', '<i>Worked out on a typical school week: school, the sessions that come every week, and the game on your usual day.</i>', '']
   // the week's load warning is said once, not on every session
   const weekWarn = new Set<string>()
   const why = (text: string) => text.split(' · ').filter((x) => !(/^the 7 days to .* over the load limit/.test(x) && weekWarn.add(x))).join(' · ')
   for (const s of sessions) {
     const p = plan.placed.filter((x) => plan.sessionOf[x.key] === s.key || (s.stackWith && plan.sessionOf[x.key] === s.stackWith))
+    // no better day in a typical week: it keeps the day it has (never "no room for speed")
+    if (!p.length && saved?.[s.key]) { lines.push(`• <b>${esc(s.name)}</b>: <b>${saved[s.key].map((x) => DAY3[x - 1]).join('/')}</b> <i>— as now</i>`); continue }
     if (!p.length) { lines.push(`• <b>${esc(s.name)}</b>: no good day (${esc(plan.tbc.find((t) => t.key.startsWith(`${s.key}#`))?.reason ?? 'no room')})`); continue }
     const reason = why(p[0].why)
     lines.push(`• <b>${esc(s.name)}</b>: <b>${p.map((x) => DAY3[isoDow(x.date) - 1]).join('/')}</b>${reason ? ` <i>— ${esc(reason)}</i>` : ''}`)
@@ -99,7 +166,7 @@ export async function proposeOwenDays(sb: SupabaseClient, chatId: number, data: 
   lines.push('', '📋 <b>Message for Owen</b> <i>(tap to copy)</i>:', `<code>${esc(msg)}</code>`, '', '<i>✅ saves these as your Owen days: the planner keeps his sessions on them each week.</i>')
   const name = (k: string) => sessions.find((s) => s.key === k)?.name ?? k
   const action: Action = { op: 'owen_days', table: 'profiles', id: 'owenDays', title: 'Owen’s days',
-    line: `🗓 Owen’s days: <b>${esc(Object.entries(days).map(([k, d]) => `${name(k)} ${d.map((x) => DAY3[x - 1]).join('/')}`).join(', '))}</b>`, patch: { owenDays: days } }
+    line: `🗓 Owen’s days: <b>${esc(Object.entries(days).map(([k, d]) => `${name(k)} ${d.map((x) => DAY3[x - 1]).join('/')}`).join(', '))}</b>`, patch: { owenDays: { ...(saved ?? {}), ...days } } }   // his own fixed days (upper Tue + Sat) stay
   const body = lines.join('\n')
   const { data: row, error } = await sb.from('telegram_pending').insert({ kind: 'action', text: 'Owen’s days', payload: { actions: [action], problems: [], summary: plain(body), owen: { days, message: msg } } }).select('id').single()
   if (error || !row) throw new Error(`Couldn’t hold the card: ${error?.message ?? 'not saved'}`)
@@ -123,13 +190,13 @@ export async function recheckOwen(sb: SupabaseClient, chatId: number, data: View
   if (recent?.[0]?.status === 'open') return false
   if (!(await claim(sb, key))) return false   // this pattern was checked already
   if (!before?.length) return false            // the first look: nothing has changed yet
-  const { days } = await typicalOwenPlan(sb, data)
-  const relevant = Object.fromEntries(Object.entries(saved).filter(([k]) => k in days))
-  if (!Object.keys(days).length || same(relevant, days)) return false
+  const typical = await typicalOwenPlan(sb, data)
+  // only when the new days are genuinely better on a typical school week (not a half-term week, not a guess)
+  if (!owenUpdate(typical, saved, data.planning)) return false
   // the same days he was offered this week and said "not now" to: don't ask again
   const offered = (recent?.[0]?.payload as { owen?: { days?: Record<string, number[]> } } | undefined)?.owen?.days
-  if (offered && same(offered, days)) return false
-  return proposeOwenDays(sb, chatId, data, '🔄 <b>Your week pattern changed: Owen’s days may need updating</b>')
+  if (offered && same(offered, typical.days)) return false
+  return proposeOwenDays(sb, chatId, data, '🔄 <b>Your week pattern changed: Owen’s days may need updating</b>', typical)
 }
 
 /** After his answers (the gap questions) or the clean-up: an Owen card still waiting is sent again if its days changed. */
