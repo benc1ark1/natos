@@ -32,8 +32,11 @@ import { loadViewData, type ViewData } from '../telegram/views'
 import { loadWorld } from '../telegram/ripple'
 import { blockOf } from '../telegram/trainplan'
 import { claim, release } from '../telegram/sent'
-import { buildToday, clampItems, todayFromSaved, type FixedIn, type Rolled, type SavedBlock, type TodayItem, type TodayPlan, type TrainingIn } from './build'
+import { ACT_FILL, ACT_FILL_WHY, actFillDay, blockedWhy, dayRules, testDays, type DayRules } from './focus'
+import { schoolDays } from '../school'
+import { buildToday, clampItems, heavyOf, todayFromSaved, type FixedIn, type Rolled, type SavedBlock, type TodayItem, type TodayPlan, type TrainingIn } from './build'
 import { isAuto, loadBlocks, saveToday } from './data'
+import { isFixedSession } from './fixed'
 import { dayMode, holidayChanges, isHoliday } from './holidays'
 
 export type TodayLoad = { plan: TodayPlan; data: ViewData; sqlMissing: boolean; world: StudyWorld; act: ActWorld }
@@ -45,12 +48,15 @@ const emptyAct = (today: string): ActWorld => ({ today, retake: null, goal: 36, 
 /** A day with no study on top of what's booked has at most this many minutes for the planner (a free half-term day). */
 const MAX_STUDY_MIN = 360
 
-/** Where he'll be and when to leave, for a training block: "leave school 16:10 (25 min)". */
-function trainingOpen(b: { start_time: string; title: string }, d: ViewData, schoolEnd: number | null): { open: string; leave: string | null } {
+/** Where he'll be and when to leave, for a training block: "leave school 16:10 (25 min)". Item 18: the leave-by line
+ *  only for a fixed session (his set time); `leave` is still given, so study keeps clear of the journey. */
+function trainingOpen(b: { start_time: string; title: string }, d: ViewData, schoolEnd: number | null, date: string): { open: string; leave: string | null; fixed: boolean } {
+  const fixed = isFixedSession(d.planning, date, b.title, b.start_time)
   const l = blockLeave({ start_time: b.start_time, title: b.title }, d.planning, schoolEnd, d.settings.bufferMin)
-  if (!l) return { open: '', leave: null }
+  if (!l) return { open: '', leave: null, fixed }
+  if (!fixed) return { open: '', leave: l.leave, fixed }
   const fromSchool = l.how.includes('from school')
-  return { open: `leave ${fromSchool ? 'school ' : ''}${l.leave} (${l.how.replace(/ from school/, '')})`, leave: l.leave }
+  return { open: `leave ${fromSchool ? 'school ' : ''}${l.leave} (${l.how.replace(/ from school/, '')})`, leave: l.leave, fixed }
 }
 
 const openTask = (t: Task) => !(t.status === 'completed' || t.archived_at || t.status === 'someday' || t.is_system)
@@ -116,6 +122,23 @@ export function effectDone(it: TodayItem, x: { date: string; tasks: Task[]; worl
   return false
 }
 
+/** The study world for a day with a focus period or a test: only that work (and never homework he can't start yet). */
+export function narrowWorld(w: StudyWorld, rules: DayRules, ok: (x: { title: string; subject?: string | null; heavy: boolean; taskId?: string | null; goalId?: string | null }) => boolean): StudyWorld {
+  const homework = w.homework.filter((h) => ok({ title: h.title, subject: h.subject, heavy: false, taskId: h.id }))
+  if (!rules.focus && !rules.test) return { ...w, homework }
+  const topics = w.topics.filter((t) => ok({ title: t.name, subject: t.subject, heavy: false }))
+  const ids = new Set(topics.map((t) => t.id))
+  return { ...w, homework, topics, tests: w.tests.filter((t) => ok({ title: t.title, subject: t.subject, heavy: false, goalId: t.id })),
+    mistakes: w.mistakes.filter((m) => !!m.topicId && ids.has(m.topicId)), programmes: w.programmes.filter((p) => ok({ title: p.name, heavy: false })) }
+}
+
+/** One saved block per task a day (the one he ticked, else the first): a task never shows twice on Today. */
+export function onePerTask<B extends { task_id: string | null; status: string; kind: string }>(rows: B[]): B[] {
+  const keep = new Map<string, B>()
+  for (const b of rows) if (b.task_id && b.kind !== 'training' && (!keep.has(b.task_id) || (b.status === 'done' && keep.get(b.task_id)!.status !== 'done'))) keep.set(b.task_id, b)
+  return rows.filter((b) => !b.task_id || b.kind === 'training' || keep.get(b.task_id) === b)
+}
+
 /** Today for `date` (default: today in London). `save`: keep a newly built list (morning message, first look that day). */
 export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?: Date; data?: ViewData; save?: boolean } = {}): Promise<TodayLoad> {
   const now = opts.now ?? new Date()
@@ -129,17 +152,35 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
     loadActWorld(sb, date).catch(() => emptyAct(date)),
     sb.from('day_state').select('energy').eq('on_date', date).maybeSingle().then((r) => (r.error ? null : r.data as { energy: Energy | null } | null)),
     whoopDay(sb, date).catch(() => null),
+    // his open App ideas: requests for Claude Code, never work for Today (none before speed.sql / on an error)
+    sb.from('app_ideas').select('request,source_text').eq('status', 'open').then((r) => (r.error ? [] : (r.data ?? []) as { request: string; source_text: string | null }[]), () => []),
   ])
   reads.catch(() => null)   // (awaited below; this only stops an "unhandled rejection" if the day's data fails first)
   const data = opts.data ?? await loadViewData(sb, date, now)
   const planning = data.planning
   const mode = dayMode(planning, date)
   const changes = holidayChanges(data.events, data.changes, planning, addDays(date, -1), addDays(date, 1))
-  const [blocks, before, world0, act, state, whoop] = await reads
+  const [blocks, before, world1, act, state, whoop, ideas] = await reads
   // low Whoop recovery makes it a lighter day (unless he said how he feels), and the list says why in one line
   const lowWhoop = !state?.energy && isLowRecovery(whoop, planning)
   const whoopNote = lowWhoop ? `🔴 Whoop recovery ${whoop!.recovery}%: a lighter day; protect your sleep tonight.` : null
   const withNote = (p: TodayPlan): TodayPlan => (whoopNote ? { ...p, note: [whoopNote, p.note].filter(Boolean).join(' ') } : p)
+  // what may go on today (lib/today/focus.ts): not before a task's start date, a focus period's own work only ("until
+  // 25 Oct only ACT": an overdue or Later task doesn't jump the queue), nothing but the test on a test day (light the
+  // day before), never an App idea
+  const schoolOn = schoolDays(data.events, changes, date, addDays(date, 1), data.settings.schoolFreePeriods)
+  const tests = testDays(data.goals, (d) => schoolOn.has(d))
+  const rules = dayRules(planning, tests, date, world1.rules ?? [])
+  const testGoal = (() => { const t = tests.get(date) ?? tests.get(addDays(date, 1)); return t ? data.goals.find((g) => g.kind === 'test' && g.title === t) ?? null : null })()
+  const okFor = (x: { title: string; subject?: string | null; heavy: boolean; taskId?: string | null; goalId?: string | null }) => {
+    const task = x.taskId ? data.tasks.find((t) => t.id === x.taskId) ?? null : null
+    const ofTest = !!testGoal && (x.goalId === testGoal.id || (/\bACT\b/.test(testGoal.title) && (x.subject === 'ACT' || /\bACT\b/.test(x.title)))
+      || (!!testGoal.subject_id && task?.subject_id === testGoal.subject_id))
+    return !blockedWhy({ title: x.title, subject: x.subject ?? null, heavy: x.heavy, task, deadline: task ? deadlineOf(task) : null, ofTest }, date, rules, { until: date, ideas, later: false })
+  }
+  const pickOk = (p: Pick) => okFor({ title: p.title, subject: p.subject, heavy: heavyOf(p), taskId: p.taskId ?? (p.done.kind === 'task' ? p.done.taskId : null), goalId: p.goalId })
+  const world0 = narrowWorld(world1, rules, okFor)
+
   // done on Today counts as done for the planners too
   const doneKeys = blocks.rows.filter((b) => b.status === 'done' && b.pick_key).map((b) => b.pick_key!)
   const world: StudyWorld = { ...world0, doneToday: [...new Set([...(world0.doneToday ?? []), ...doneKeys])] }
@@ -158,22 +199,25 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
     let extra: Pick[] = []
     try { extra = actPicks(act, day) } catch { extra = [] }
     // (training comes from his week's blocks or the week optimiser below, never from the study planner)
-    try { return planStudyDay(world, day, extra).picks.filter((p) => p.kind !== 'training') } catch { return [...extra].filter((p) => p.kind !== 'training').sort((a, b) => a.tier - b.tier) }
+    try { return planStudyDay(world, day, extra).picks.filter((p) => p.kind !== 'training' && pickOk(p)) } catch { return [...extra].filter((p) => p.kind !== 'training' && pickOk(p)).sort((a, b) => a.tier - b.tier) }
   }
   const doneOf = (it: TodayItem) => effectDone(it, { date, tasks: data.tasks, world, act })
-  const trainOpen = (b: SavedBlock) => trainingOpen(b, data, schoolEnd).open
+  const trainOpen = (b: SavedBlock) => trainingOpen(b, data, schoolEnd, date).open
+  const trainFixed = (b: SavedBlock) => isFixedSession(planning, date, b.title, b.start_time)
 
   const nowHM = date === today ? timeOf(now) : null
   // a list saved earlier today, or his own plan: shown as it is. A plan he applied after the list was saved replaces
   // the list's open items (applyPlan replaces planned blocks), so then it's his plan plus what he already ticked.
-  const auto = blocks.rows.filter((b) => isAuto(b, date))
-  const his = blocks.rows.filter((b) => !isAuto(b, date) && b.kind !== 'training')
+  // (a saved block that can't be today any more is left off, and one block per task: the first, or the one ticked)
+  const live = onePerTask(blocks.rows.filter((b) => b.kind === 'training' || okFor({ title: b.title, heavy: b.kind === 'focus', taskId: b.task_id, goalId: b.goal_id })))
+  const auto = live.filter((b) => isAuto(b, date))
+  const his = live.filter((b) => !isAuto(b, date) && b.kind !== 'training')
   const training = blocks.rows.filter((b) => b.kind === 'training' && !isAuto(b, date))
   if (auto.length || his.length) {
     const autoLive = auto.length > 0 && (auto.some((b) => b.status === 'planned') || !his.length)
-    const picks = [...planner(MAX_STUDY_MIN), ...taskPicks(data.tasks, date, act.subjectId)]
+    const picks = [...planner(MAX_STUDY_MIN), ...taskPicks(data.tasks, date, act.subjectId).filter(pickOk)]
     const list = autoLive ? [...auto, ...training] : [...his, ...auto.filter((b) => b.status === 'done'), ...training]
-    const plan = todayFromSaved({ date, mode, blocks: list, picks, fixed, max, source: autoLive ? 'auto' : 'his', trainingOpen: trainOpen, effectDone: doneOf, now: nowHM })
+    const plan = todayFromSaved({ date, mode, blocks: list, picks, fixed, max, source: autoLive ? 'auto' : 'his', trainingOpen: trainOpen, trainingFixed: trainFixed, effectDone: doneOf, now: nowHM })
     return { plan: withNote(plan), data, sqlMissing: blocks.sqlMissing, world, act }
   }
 
@@ -197,8 +241,8 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
 
   // training: his applied week's blocks, else where the week optimiser puts today's sessions
   let trainingIn: TrainingIn[] = training.map((b) => {
-    const t = trainingOpen(b, data, schoolEnd)
-    return { title: b.title, start: b.start_time, end: b.end_time, blockIds: [b.id], targetId: b.target_id, open: t.open, done: b.status === 'done', cutFrom: t.leave ?? undefined, cutTo: t.leave ? hm(minutesOf(b.end_time) + minutesOf(b.start_time) - minutesOf(t.leave)) : undefined }
+    const t = trainingOpen(b, data, schoolEnd, date)
+    return { title: b.title, start: b.start_time, end: b.end_time, blockIds: [b.id], targetId: b.target_id, open: t.open, done: b.status === 'done', fixed: t.fixed, cutFrom: t.leave ?? undefined, cutTo: t.leave ? hm(minutesOf(b.end_time) + minutesOf(b.start_time) - minutesOf(t.leave)) : undefined }
   })
   let newTraining: TrainingIn[] = []
   // (only when the list is being saved: the morning message, the first look at Today; a preview doesn't run it)
@@ -211,8 +255,10 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
       const placed = planTraining({ ...w, changes: holidayChanges(w.events, w.changes, planning, w.from, w.to) }).placed.filter((p) => p.date === date && (date !== today || minutesOf(p.start) >= nowMin))
       newTraining = placed.map((p) => {
         const b = blockOf(p)
-        const leave = b.leave ? `leave ${b.from === 'school' ? 'school ' : ''}${b.leave}` : ''
-        return { title: b.title, start: b.start, end: b.end, blockIds: [], targetId: p.targetId ?? null, open: [leave, p.intensity !== 'heavy' ? p.intensity : ''].filter(Boolean).join(' · '), done: false,
+        // item 18: a leave-by line only for a fixed session (his set time), not a time the planner chose
+        const fixed = isFixedSession(planning, date, b.title, b.start)
+        const leave = b.leave && fixed ? `leave ${b.from === 'school' ? 'school ' : ''}${b.leave}` : ''
+        return { title: b.title, start: b.start, end: b.end, blockIds: [], targetId: p.targetId ?? null, open: [leave, p.intensity !== 'heavy' ? p.intensity : ''].filter(Boolean).join(' · '), done: false, fixed,
           cutFrom: hm(minutesOf(b.start) - (p.before ?? 0)), cutTo: hm(minutesOf(b.end) + (p.after ?? 0)) }
       })
       trainingIn = newTraining
@@ -221,13 +267,15 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
 
   const studyFree = slots.reduce((a, s) => a + s.minutes, 0) - trainingIn.reduce((a, t) => a + minutesOf(t.end) - minutesOf(t.start), 0)
   const studyMinutes = Math.max(0, Math.min(studyFree, budget ?? MAX_STUDY_MIN))
-  const tasks = taskPicks(data.tasks, date, act.subjectId)
+  // an ACT focus period: the free time left goes to ACT (reading, grammar, ACT maths), after everything else
+  const fill = actFillDay(rules) ? ACT_FILL.map((f): Pick => ({ key: `act:focus:${f.key}`, kind: 'act', tier: TIER.leftover, subject: 'ACT', title: f.title, open: f.open, minutes: f.minutes, why: ACT_FILL_WHY, done: { kind: 'block' }, heavy: true })) : []
+  const tasks = [...taskPicks(data.tasks, date, act.subjectId).filter(pickOk), ...fill]
   // not done yesterday: it comes back today, straight after homework (his own plan's blocks too: a task block as that
   // task), unless it got done another way since (reported by message, task completed)
   const yesterday = addDays(date, -1)
   const rolledPicks = before.rows.filter((b) => b.status === 'planned' && b.kind !== 'training' && b.kind !== 'rest')
     .map((b) => rolledPick(b, date)).filter((p) => !(p.done.kind === 'task' && !data.tasks.some((t) => t.id === (p.done as { taskId: string }).taskId)))
-    .filter((p) => !effectDone({ key: p.key, done: p.done } as TodayItem, { date, tasks: data.tasks, world, act }))
+    .filter((p) => !effectDone({ key: p.key, done: p.done } as TodayItem, { date, tasks: data.tasks, world, act }) && pickOk(p))
   const rolled: Rolled[] = rolledPicks.map((p) => ({ key: p.key, title: p.title, from: yesterday }))
   const homeworkIds = new Set(world.homework.map((h) => h.id))
   const mustDo = tasks.filter((p) => p.tier <= TIER.homework && !homeworkIds.has(p.taskId ?? '')).length
@@ -248,7 +296,7 @@ export async function loadToday(sb: SupabaseClient, opts: { date?: string; now?:
       if (!again.rows.some((b) => isAuto(b, date))) { await new Promise((ok) => setTimeout(ok, 400)); again = await loadBlocks(sb, date) }
       const auto2 = again.rows.filter((b) => isAuto(b, date))
       if (auto2.length) {
-        const plan2 = todayFromSaved({ date, mode, blocks: [...auto2, ...again.rows.filter((b) => b.kind === 'training' && !isAuto(b, date))], picks: [...picks, ...tasks], fixed, max, source: 'auto', trainingOpen: trainOpen, effectDone: doneOf, now: nowHM })
+        const plan2 = todayFromSaved({ date, mode, blocks: [...auto2, ...again.rows.filter((b) => b.kind === 'training' && !isAuto(b, date))], picks: [...picks, ...tasks], fixed, max, source: 'auto', trainingOpen: trainOpen, trainingFixed: trainFixed, effectDone: doneOf, now: nowHM })
         return { plan: withNote(plan2), data, sqlMissing, world, act }
       }
     } else plan.source = 'auto'

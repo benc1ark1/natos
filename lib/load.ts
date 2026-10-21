@@ -126,6 +126,7 @@ export type LoadWorld = {
   mental?: Map<string, { total: number; high: boolean; testEve: boolean; what: string }>
   fridayLight?: boolean
   weekendUpper?: boolean
+  lightOnly?: Map<string, string>       // days only light training goes on (the day before a test), with why
 }
 
 export type Issue = { text: string; keys: string[]; weight: number }
@@ -135,6 +136,8 @@ export type LoadPlan = { placed: LoadPlaced[]; tbc: { key: string; title: string
 
 /** Sessions whose quality comes first: going lighter costs three times as much. */
 export const KEY_TYPES = new Set(['lower', 'sprint', 'plyo'])
+/** The gym sessions a typed "gym" that day already is (never a second one on top). */
+const GYM_TYPES = new Set(['upper', 'lower', 'plyo', 'gym'])
 
 /** What each problem costs when a week is scored (his optimiser weights; Settings → Optimiser weights). */
 export const weightsOf = (ls: Partial<LoadSettings>) => ({
@@ -299,32 +302,46 @@ export function planLoad(needs: LoadNeed[], w: LoadWorld): LoadPlan {
   // what a placed session takes up that day: the travel there, the session, the travel back and a short break
   const usedOn = (date: string, upto: number) => chosen.slice(0, upto).filter((c): c is NonNullable<Choice> => !!c && c.s.date === date)
     .map((c) => [minutesOf(c.s.start) - (c.s.before ?? 0), minutesOf(c.s.end) + (c.s.after ?? 0) + 15] as [number, number])
+  // (whether a fixed day can take a session at all: the other sessions with a set time that day count, like Owen's speed
+  // Tue 18:30 after school football, so his usual upper Tue moves to another day instead of being left out)
+  const setTimesOn = (date: string, self: LoadNeed) => order.filter((m) => m !== self && m.preferred === date && m.preferStart)
+    .map((m) => [minutesOf(m.preferStart!), minutesOf(m.preferStart!) + m.minutes + 15] as [number, number])
   const uppers = order.map((n, i) => (n.type === 'upper' ? i : -1)).filter((i) => i >= 0)
   const lastUpper = uppers.length ? Math.max(...uppers) : -1
+  // one of each kind a day: never a second upper that day (Fri 12:30 and 15:00), nor one on top of the same kind in his
+  // calendar or the week he typed ("Owen Wed" is that day's speed session; a typed "gym" is that day's gym session)
+  const sameKind = (n: LoadNeed, date: string, upto: number) => chosen.slice(0, upto).some((c) => !!c && c.s.date === date && c.s.type === n.type)
+    || w.fixed.some((f) => f.date === date && (f.type === n.type || (f.type === 'gym' && GYM_TYPES.has(n.type))))
+  // a fixed day that can't take its session at all (no room, a test the next day) isn't a choice: moving off it is forced
+  let dayOpen: boolean[] = []
 
-  const options = (i: number): NonNullable<Choice>[] => {
+  const options = (i: number, alone = false): NonNullable<Choice>[] => {
     const n = order[i]
     const pin = w.pins?.get(n.key)
     const out: NonNullable<Choice>[] = []
     const levels = pin?.intensity ? [pin.intensity] : n.noLighter ? [n.intensity] : INTENSITIES.filter((x) => loadRank(loadOfIntensity(x)) <= loadRank(loadOfIntensity(n.intensity))).reverse()
-    const dates = pin?.date ? [pin.date] : w.rooms.map((r) => r.date)
+    const dates = alone ? [n.preferred!] : pin?.date ? [pin.date] : w.rooms.map((r) => r.date)
     // two sessions of the same thing are interchangeable: only try them in day order
     const twin = order.slice(0, i).map((x, j) => (x.title === n.title && x.type === n.type && !w.pins?.get(x.key) ? j : -1)).filter((j) => j >= 0).pop()
+    const moveCost = dayOpen[i] === false ? W.moved : n.preferCost ?? W.moved
     for (const date of dates) {
-      if (!pin && twin !== undefined && chosen[twin] && date <= chosen[twin]!.s.date) continue
+      if (!alone && !pin && twin !== undefined && chosen[twin] && date <= chosen[twin]!.s.date) continue
+      if (sameKind(n, date, alone ? 0 : i)) continue
       const wheres: (Where | null)[] = w.where ? w.where(n, date).filter((x) => !pin?.place || x.place === pin.place || x.label === pin.place) : [null]
-      for (const lv of levels) {
+      // the day before a test: light only (a session that's never lighter can't go that day)
+      for (const lv of w.lightOnly?.has(date) ? levels.filter((x) => x === 'light') : levels) {
         // the cheapest place that fits that day (travel and fit), around what's already placed
         let pick: { at: { start: string; end: string }; wh: Where | null } | null = null
         // his time: a pin's, else the time on the session's fixed day ("upper Sat 09:30")
         const start = pin?.start ?? (n.preferStart && date === n.preferred ? n.preferStart : null)
+        const used = alone ? setTimesOn(date, n) : usedOn(date, i)
         for (const wh of wheres) {
-          const at = slotFor(rooms.get(date), n.minutes, lv === 'heavy', usedOn(date, i), w, start, wh)
+          const at = slotFor(rooms.get(date), n.minutes, lv === 'heavy', used, w, start, wh)
           if (at && (!pick || (wh?.extra ?? 0) < (pick.wh?.extra ?? 0))) pick = { at, wh }
         }
         if (!pick && start) {   // his time didn't fit: the first time that does on the day he chose (never on top of something)
           for (const wh of wheres) {
-            const at = slotFor(rooms.get(date), n.minutes, lv === 'heavy', usedOn(date, i), w, null, wh)
+            const at = slotFor(rooms.get(date), n.minutes, lv === 'heavy', used, w, null, wh)
             if (at && (!pick || (wh?.extra ?? 0) < (pick.wh?.extra ?? 0))) pick = { at, wh }
           }
         }
@@ -333,7 +350,7 @@ export function planLoad(needs: LoadNeed[], w: LoadWorld): LoadPlan {
         const cost = costOf({ title: n.title, type: n.type, intensity: lv, date }, w.costs, w.types, w.settings)
         // going lighter costs more for the sessions the week is built on (heavy lower, speed, plyo: their quality first)
         const extra = (loadRank(loadOfIntensity(n.intensity)) - loadRank(loadOfIntensity(lv))) * W.lighter * (KEY_TYPES.has(n.type) ? 3 : 1)
-          + (n.preferred && n.preferred !== date ? n.preferCost ?? W.moved : 0) + (minutesOf(at.start) < minutesOf(w.trainingFrom) && !wh ? W.early : 0) + (wh?.extra ?? 0)
+          + (n.preferred && n.preferred !== date ? moveCost : 0) + (minutesOf(at.start) < minutesOf(w.trainingFrom) && !wh ? W.early : 0) + (wh?.extra ?? 0)
         out.push({ s: { key: n.key, title: n.title, type: n.type, intensity: lv, date, start: at.start, end: at.end, fixed: false, cost,
           ...(wh ? { place: wh.place, label: wh.label, from: wh.from, before: wh.before, after: wh.after, whereWhy: wh.why, guess: wh.guess } : {}) }, extra })
       }
@@ -349,6 +366,7 @@ export function planLoad(needs: LoadNeed[], w: LoadWorld): LoadPlan {
     if (w.weekendUpper && lastUpper >= 0 && upto > lastUpper && !list.some((x) => x.s.type === 'upper' && isoDow(x.s.date) >= 6)) c += W.weekendUpper
     return c
   }
+  dayOpen = order.map((n, i) => (n.preferred && n.preferCost && !w.pins?.get(n.key)?.date ? options(i, true).length > 0 : true))
   const base = assess(w.fixed, w).cost   // what the fixed sessions cost on their own (the same in every plan)
   // a lower bound for what's still to place: each need's cheapest choice on its own (place, travel, intensity), or
   // leaving it out if that's cheaper. Interactions only add cost, so this never cuts off a better week.

@@ -23,7 +23,7 @@ import { loadConnection, saveTokens, tokensOf, updateConnection, type Connection
 import { MAIL_MARK, ingest } from '../mail/store'
 import { readIncoming } from '../mail/rules'
 import { GoneError, GoogleCal, ReconnectError, refreshAccess, type EventBody, type GEvent, type GTime } from './api'
-import { classroomDetails } from '../tracker/classroom'   // item 1c: test-like assignments keep their description
+import { classroomDetails, classroomTitle } from '../tracker/classroom'   // item 1c + fix round 20: the description, a real title
 
 export const PUSH_DAYS = 28        // Life OS holds the next 4 weeks
 export const READ_DAYS = 42        // other calendars: the next 6 weeks
@@ -316,6 +316,7 @@ async function readMail(sb: SupabaseClient, list: string[]) {
     had.messages.push(...input.messages)
     if (input.sent && (!had.sent || input.sent > had.sent)) had.sent = input.sent
     had.address ??= input.address
+    had.aliases ??= input.aliases
   }
   for (const input of byAccount.values()) await ingest(sb, input).catch(() => 0)
 }
@@ -350,7 +351,7 @@ const words = (s: string) => new Set(s.toLowerCase().match(/[a-z0-9]+/g) ?? [])
 async function importHomework(sb: SupabaseClient, list: { cal: CalSetting; g: GEvent }[], userId: string, today: string) {
   if (!list.length) return []
   const [{ data: have }, { data: subjects }] = await Promise.all([
-    sb.from('tasks').select('id,external_id,due_at,archived_at,status,subject_id,hand_in_url').not('external_id', 'is', null),
+    sb.from('tasks').select('id,external_id,title,details,source_text,due_at,archived_at,status,subject_id,hand_in_url').not('external_id', 'is', null),
     sb.from('subjects').select('id,name').is('archived_at', null),
   ])
   const byExt = new Map((have ?? []).map((t) => [t.external_id as string, t]))
@@ -375,26 +376,34 @@ async function importHomework(sb: SupabaseClient, list: { cal: CalSetting; g: GE
   for (const [ext, { cal, g, info }] of items) {
     const due = g.start!.date ?? dateISOOf(g.start!.dateTime!)
     const time = g.start!.dateTime ? timeOf(g.start!.dateTime) : null
-    const title = (g.summary ?? '').replace(ASSIGNMENT, '').trim().slice(0, 120) || 'Assignment'
-    const subject = subjectOf(info.subject, `${info.className ?? ''} ${cal.name} ${title}`)
+    // fix round 20: the real due time when Classroom gives one ("due 08:30 Mon" has to be done by Sunday), else the day
+    const dueAt = g.start!.dateTime ? new Date(g.start!.dateTime).toISOString() : dueAtFromDate(due)
+    const raw = (g.summary ?? '').replace(ASSIGNMENT, '').trim().slice(0, 120) || 'Assignment'
+    const subject = subjectOf(info.subject, `${info.className ?? ''} ${cal.name} ${raw}`)
+    // "Homework from 14/10" → the objective or topic; the teacher's description (the questions) in the notes; a test's
+    // description is also read once by the bot: "Test on <date> – plan revision? ✅" (lib/tracker/classroom.ts)
+    const title = classroomTitle(raw, g.description, subject?.name ?? info.subject)
+    const details = classroomDetails([info.className, time ? `Due ${time}` : null].filter(Boolean).join(' · ') || null, raw, g.description)
     const old = byExt.get(ext)
     if (!old) {
       const { error } = await sb.from('tasks').insert({
-        user_id: userId, title, origin: 'school', importance: 'must', due_at: dueAtFromDate(due), status: autoStatus(due, today),
+        user_id: userId, title, origin: 'school', importance: 'must', due_at: dueAt, status: autoStatus(due, today),
         source: 'import', source_text: g.summary ?? null, external_id: ext, subject_id: subject?.id ?? null,
-        // study tracker (item 1c): a test-like assignment also keeps the teacher's description, so the bot can read it
-        // once and ask "Test on <date> – plan revision? ✅" (lib/tracker/classroom.ts)
-        details: classroomDetails([info.className, time ? `Due ${time}` : null].filter(Boolean).join(' · ') || null, title, g.description),
-        hand_in: 'Google Classroom', hand_in_url: info.link,
+        details, hand_in: 'Google Classroom', hand_in_url: info.link,
       })
       if (error) throw new Error(`Couldn’t add homework “${title}”: ${error.message}`)
       added.push({ title, due, time, subject: subject?.name ?? null })
     } else if (!old.archived_at && old.status !== 'completed') {
       const patch: Record<string, unknown> = {}
       if (old.due_at && dateISOOf(old.due_at) !== due) {   // the teacher moved the date
-        patch.due_at = dueAtFromDate(due)
+        patch.due_at = dueAt
         if (['inbox', 'today', 'this_week', 'this_month'].includes(old.status)) patch.status = autoStatus(due, today)
+      } else if (old.due_at && Date.parse(old.due_at) === Date.parse(dueAtFromDate(due)) && Date.parse(old.due_at) !== Date.parse(dueAt)) {
+        patch.due_at = dueAt   // made before fix round 20 (the day only): its real due time
       }
+      // one made before fix round 20 ("Homework from 14/10", no questions): the real title and notes, unless he changed them
+      if (old.title === raw && title !== raw) patch.title = title
+      if (details && details !== old.details && (!old.details || details.startsWith(old.details))) patch.details = details
       if (!old.subject_id && subject) patch.subject_id = subject.id
       if (!old.hand_in_url && info.link) patch.hand_in_url = info.link
       if (Object.keys(patch).length) {

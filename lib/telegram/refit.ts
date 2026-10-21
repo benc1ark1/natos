@@ -18,7 +18,7 @@ import { buildYourWeek, yourWeekButtons, yourWeekText } from './yourweek'
 type Card = { id: string; payload: PlanPayload & { card_message_id?: number | null }; created_at: string }
 
 /** The newest Your week card still waiting for ✅ (last 36 hours). */
-async function openWeekCard(sb: SupabaseClient): Promise<Card | null> {
+export async function openWeekCard(sb: SupabaseClient): Promise<Card | null> {
   const since = new Date(Date.now() - 36 * 3_600_000).toISOString()
   const { data } = await sb.from('telegram_pending').select('id,payload,created_at').eq('kind', 'plan').in('status', ['open', 'editing']).gte('created_at', since)
     .order('created_at', { ascending: false }).limit(5)
@@ -33,7 +33,17 @@ export async function appliedKnockOn(sb: SupabaseClient, data: ViewData, days?: 
   // move does: a time that's busy now, a rule it now breaks, or (on the days the change is about) a better place.
   const r = ripple(world, world)
   const onDay = (m: Ripple['moves'][number]) => !!days?.some((d) => m.from.startsWith(`${dowShort(d)} ${+d.slice(8)} `))
-  r.moves = r.moves.filter((m) => (m.reason !== 'the week changed' && !/ today: /.test(m.reason)) || onDay(m))
+  const moves = r.moves.filter((m) => (m.reason !== 'the week changed' && !/ today: /.test(m.reason)) || onDay(m))
+  // a move that lands on a block whose own move was left out: that block moves too (never two on top of each other)
+  const m = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5))
+  for (let again = true; again;) {
+    again = false
+    for (const x of r.moves) {
+      const b = moves.includes(x) ? null : world.planned.find((p) => p.id === x.blockId)
+      if (b && moves.some((k) => k.to && k.to.date === b.on_date && m(k.to.start) < m(b.end_time) && m(b.start_time) < m(k.to.end))) { moves.push(x); again = true }
+    }
+  }
+  r.moves = moves
   return r
 }
 

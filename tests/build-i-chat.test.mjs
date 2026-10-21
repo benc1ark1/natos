@@ -177,7 +177,7 @@ test('Homework feed (copied from the school account by the Apps Script): subject
   const tasks = async () => q(`select title, origin, importance, due_at, status, hand_in, hand_in_url, details, external_id, (select name from subjects where id = subject_id) subject from tasks order by title`)
   let [bin, sheet] = await tasks()
   assert.deepEqual([sheet.title, sheet.subject, sheet.origin, sheet.importance, sheet.hand_in, sheet.hand_in_url, sheet.details, sheet.external_id],
-    ['Integration sheet', 'Further Maths', 'school', 'must', 'Google Classroom', 'https://classroom.google.com/c/AAA/a/BBB/details', 'Maths Further Mf1a · Due 08:30', 'classroom:0123456789abcdef'])
+    ['Integration sheet', 'Further Maths', 'school', 'must', 'Google Classroom', 'https://classroom.google.com/c/AAA/a/BBB/details', 'Maths Further Mf1a · Due 08:30\n\nQ1–10 please.', 'classroom:0123456789abcdef'])   // fix round 20: the questions in the notes
   assert.equal(T().dateISOOf(sheet.due_at.toISOString()), fri)
   assert.equal(bin.subject, 'Maths')
   assert.equal(bin.hand_in_url, null, 'no link: none made up')

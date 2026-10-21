@@ -5,7 +5,11 @@
  * needs a reply, event, or ignore) and tells you on Telegram. Only an email that looks like homework (homework words
  * in its subject or preview, or from a sender Nat OS says sets homework: your tutors and your school) also goes with
  * its text (up to 4,000 characters), so the task gets the right deadline and what to do. Nat OS keeps that text only
- * if it is homework.
+ * if it is homework. Who it was sent to (To and Cc) goes too: an email you're only CC'd on, or that's clearly between
+ * other people (not a group or list you're in, not homework, a deadline or a sender you flag), never alerts you and is
+ * listed under "Emails worth a look" (the Inbox page and /mail). An email to a Google Group or list you're in (a teacher
+ * to year13@…) is never treated as a newsletter when it's from your school or sets work. A busy run is sent in parts
+ * small enough for Nat OS, each remembered once it's delivered.
  *  - Read-only: this project only has permission to READ Gmail (see appsscript.json), so it can't send, delete,
  *    archive or mark anything as read, even by mistake.
  *  - Never twice: it remembers what it has sent, and Nat OS ignores repeats anyway.
@@ -23,6 +27,7 @@ const FALLBACK_CALENDAR_ID = '__FALLBACK__';   // school: the Homework feed cale
 const APP_URL = 'https://personal-os-roan-rho.vercel.app/api/mail/incoming';
 const FIRST_RUN_HOURS = 12;   // the very first run looks this far back
 const MAX_PER_RUN = 40;       // a busy inbox is sent in parts (the rest next run)
+const MAX_POST = 150000;      // characters per call to Nat OS (it takes up to 200,000: lib/mail/incoming.ts MAX_BYTES)
 
 // ---------------------------------------------------------------------------------------------------------------
 // Nothing below needs changing.
@@ -31,8 +36,13 @@ const MAX_PER_RUN = 40;       // a busy inbox is sent in parts (the rest next ru
 const HOUR = 60 * 60 * 1000;
 const MARK = 'natos-mail ';
 const MAIL_TAG = 'natosMail';
-const HEADERS = ['From', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
+// To and Cc: an email you're only CC'd on, or that's between other people, goes in "Emails worth a look" (no alert)
+const HEADERS = ['From', 'To', 'Cc', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted', 'X-Google-Group-Id'];
 const MAX_BODY = 4000;
+const MAX_RCPT = 4000;       // To and Cc each (the same as Nat OS: lib/mail/rules.ts MAX_RCPT), so a long class list keeps your address
+const CAL_RCPT = 500;        // To and Cc each in the fallback calendar (marked as cut, so Nat OS treats the email as yours)
+// a Google Group's own unsubscribe link: a teacher's email to year13@… is group mail, not a newsletter
+const GOOGLE_GROUP = /googlegroups|groups\.google\.com/i;
 // the same words Nat OS uses (lib/mail/homework.ts HOMEWORK_WORDS)
 const HOMEWORK_WORDS = /\b(home ?work|hw|due|deadline|assignment|worksheet|exercises?|problems?|questions?|coursework|essay|submit|hand ?in|past paper|revise|revision)\b/i;
 
@@ -66,15 +76,38 @@ function checkMail() {
     const since = Number(props.getProperty('since')) || now - FIRST_RUN_HOURS * HOUR;
     const sentIds = JSON.parse(props.getProperty('sentIds') || '[]');
     const found = newMessages(since, sentIds);
-    const way = deliver({ account: ACCOUNT, address: myAddress(props), sent: new Date(now).toISOString(), messages: found });
-    // only once Nat OS (or the fallback calendar) has them: remember them, and move the starting point on
-    props.setProperty('sentIds', JSON.stringify(sentIds.concat(found.map((m) => m.id)).slice(-300)));
-    const newest = found.reduce((a, m) => Math.max(a, Date.parse(m.received)), since);
-    props.setProperty('since', String(newest));
-    console.log(found.length + ' new email(s) sent ' + (way === 'calendar' ? 'via the Homework feed calendar.' : 'to Nat OS.'));
+    const base = { account: ACCOUNT, address: myAddress(props), aliases: myAliases(props), sent: new Date(now).toISOString() };
+    // in parts small enough for Nat OS (oldest first): each part is remembered as soon as it's delivered, so a problem
+    // with one part never sends the earlier ones again or stops the next run
+    let ids = sentIds, newest = since, way = 'url', n = 0;
+    for (const part of inParts(base, found)) {
+      way = deliver(Object.assign({}, base, { messages: part }));
+      // only once Nat OS (or the fallback calendar) has them: remember them, and move the starting point on
+      ids = ids.concat(part.map((m) => m.id)).slice(-300);
+      newest = part.reduce((a, m) => Math.max(a, Date.parse(m.received)), newest);
+      props.setProperty('sentIds', JSON.stringify(ids));
+      props.setProperty('since', String(newest));
+      n += part.length;
+    }
+    console.log(n + ' new email(s) sent ' + (way === 'calendar' ? 'via the Homework feed calendar.' : 'to Nat OS.'));
   } finally {
     lock.releaseLock();
   }
+}
+
+/** The emails in parts of at most MAX_POST characters each, in order (always at least one part: the check-in). */
+function inParts(base, messages) {
+  const empty = JSON.stringify(Object.assign({}, base, { messages: [] })).length;
+  const parts = [];
+  let part = [], size = empty;
+  for (const m of messages) {
+    const n = JSON.stringify(m).length + 1;
+    if (part.length && size + n > MAX_POST) { parts.push(part); part = []; size = empty; }
+    part.push(m);
+    size += n;
+  }
+  if (part.length || !parts.length) parts.push(part);
+  return parts;
 }
 
 /** New emails since `since` (an hour's overlap, minus what was already sent), oldest first: metadata only. */
@@ -99,14 +132,24 @@ function newMessages(since, sentIds) {
     ((m.payload && m.payload.headers) || []).forEach((x) => { h[x.name.toLowerCase()] = x.value; });
     const precedence = (h['precedence'] || '').toLowerCase();
     const auto = (h['auto-submitted'] || 'no').toLowerCase();
+    const to = h['to'] || '', cc = h['cc'] || '';
+    const group = !!h['x-google-group-id'] || GOOGLE_GROUP.test((h['list-unsubscribe'] || '') + ' ' + (h['list-id'] || ''));
     const one = {
       id: m.id, thread: m.threadId, from: (h['from'] || '').slice(0, 400), subject: (h['subject'] || '').slice(0, 300),
+      // cut short? said, so a long class list is never read as a whole one
+      to: to.slice(0, MAX_RCPT), cc: cc.slice(0, MAX_RCPT), toCut: to.length > MAX_RCPT, ccCut: cc.length > MAX_RCPT,
+      list: !!(h['list-id'] || ['bulk', 'list'].indexOf(precedence) >= 0),
+      // a newsletter (its own unsubscribe link, not a Google Group's) or a robot: still ignored, however it's addressed
+      newsletter: !!h['list-unsubscribe'] && !group,
+      bulk: ['bulk', 'junk'].indexOf(precedence) >= 0 || auto !== 'no',
       snippet: (m.snippet || '').slice(0, 300), received: new Date(Number(m.internalDate)).toISOString(),
       labels: (m.labelIds || []).filter((l) => l.indexOf('CATEGORY_') === 0),
       automated: !!(h['list-unsubscribe'] || h['list-id'] || ['bulk', 'list', 'junk'].indexOf(precedence) >= 0 || auto !== 'no'),
     };
+    // group mail (a teacher to year13@…) is "automated" only because of its list headers: it can be homework too
+    const groupOnly = one.list && !one.newsletter && !one.bulk;
     // the text too, only when it looks like homework (homework words, or a sender Nat OS says sets homework)
-    if (!one.automated && (HOMEWORK_WORDS.test(one.subject + ' ' + one.snippet) || fromListed(one.from, bodyFrom))) {
+    if ((!one.automated || groupOnly) && (HOMEWORK_WORDS.test(one.subject + ' ' + one.snippet) || fromListed(one.from, bodyFrom))) {
       // a text that can't be read never stops the run (the email still goes, with its preview line)
       try {
         const text = bodyText(id);
@@ -197,7 +240,7 @@ function toCalendar(payload) {
   const props = PropertiesService.getScriptProperties();
   for (const m of payload.messages) {
     const at = new Date(m.received);
-    const one = { account: payload.account, address: payload.address, sent: payload.sent, messages: [m] };
+    const one = { account: payload.account, address: payload.address, aliases: payload.aliases, sent: payload.sent, messages: [small(m)] };
     const ev = cal.createEvent('📧 Email for Nat OS', at, at, { description: MARK + JSON.stringify(one) });
     ev.removeAllReminders();
     ev.setTag(MAIL_TAG, 'mail');
@@ -217,6 +260,30 @@ function toCalendar(payload) {
   }
   const old = new Date(now.getTime() - 48 * HOUR);
   cal.getEvents(new Date(now.getTime() - 30 * 24 * HOUR), old).forEach((e) => { if (e.getTag(MAIL_TAG) === 'mail') e.deleteEvent(); });
+}
+
+/** An email for the fallback calendar: To and Cc kept short (a long class list would make the entry too big), marked
+ *  as cut so Nat OS treats it as yours. */
+function small(m) {
+  const to = m.to || '', cc = m.cc || '';
+  return Object.assign({}, m, {
+    to: to.slice(0, CAL_RCPT), cc: cc.slice(0, CAL_RCPT),
+    toCut: !!m.toCut || to.length > CAL_RCPT, ccCut: !!m.ccCut || cc.length > CAL_RCPT,
+  });
+}
+
+/** This account's other addresses (its "Send mail as" aliases), so an email to one of them counts as to you. Asked once a
+ *  day; read-only. If Gmail won't say, just the main address is used. */
+function myAliases(props) {
+  const day = new Date().toISOString().slice(0, 10);
+  if (props.getProperty('aliasesDay') === day) return JSON.parse(props.getProperty('aliases') || '[]');
+  let list = [];
+  try {
+    list = ((Gmail.Users.Settings.SendAs.list('me').sendAs) || []).map((s) => String(s.sendAsEmail || '').toLowerCase()).filter(Boolean).slice(0, 20);
+  } catch (e) { /* the main address is enough */ }
+  props.setProperty('aliases', JSON.stringify(list));
+  props.setProperty('aliasesDay', day);
+  return list;
 }
 
 /** This account's address (for "Open in Gmail" links), asked once. */

@@ -9,14 +9,14 @@ import type { PlannerContext } from '../ask/server'
 import { completeTask, moveTask, undoComplete, updateTask } from '../data'
 import { saveProject, setProjectArchived } from '../projects'
 import { setReminderDone } from '../reminders'
-import { autoStatus, deadlineLabel } from '../tasks'
+import { autoStatus, deadlineLabel, deadlineOf } from '../tasks'
 import { dowShort, dueAtFromDate, shortDate, timeOf, dateISOOf, todayISO, weekStartISO, zonedToUTC } from '../time'
 import type { Project, Reminder, Task, TaskStatus, WeeklyTarget } from '../types'
 import { C2_OPS, GUIDE_OPS, STUDY_OPS, applyC2, checkC2, loadC2Rows, undoC2, type C2Applied, type C2Op, type C2Rows } from './actions-c2'
 import { PLUGIN_OPS, PLUGINS, pluginFor } from './plugins'
 import type { PluginAction, PluginApplied } from './plugin-types'
 
-export const BUILTIN_OPS = ['complete', 'move', 'due', 'drop', 'star', 'unstar', 'minutes', 'importance', 'project', 'rename',
+export const BUILTIN_OPS = ['complete', 'move', 'due', 'not_before', 'drop', 'star', 'unstar', 'minutes', 'importance', 'project', 'rename',
   'reminder_done', 'reminder_when', 'project_new', 'project_archive', 'target_week', ...C2_OPS] as const
 export type Op = (typeof BUILTIN_OPS)[number]
 /** Every change the brain may send: the built-in ones, then the plug-ins' (lib/telegram/plugins). */
@@ -47,7 +47,7 @@ export const ACTION_SCHEMA = {
   additionalProperties: false,
 }
 
-type Table = 'tasks' | 'reminders' | 'projects' | 'target_weeks' | 'events' | 'event_exceptions' | 'goals' | 'weekly_targets' | 'training_rules' | 'places' | 'travel_times' | 'profiles' | 'integrations' | 'pipeline_stages' | 'topics' | 'mistakes' | 'guides' | 'guide_logs' | 'mail_rules' | 'load_costs' | 'plan_blocks' | 'habit_items' | 'subjects'
+type Table = 'tasks' | 'reminders' | 'projects' | 'target_weeks' | 'events' | 'event_exceptions' | 'goals' | 'weekly_targets' | 'training_rules' | 'places' | 'travel_times' | 'profiles' | 'integrations' | 'pipeline_stages' | 'topics' | 'mistakes' | 'guides' | 'guide_logs' | 'mail_rules' | 'load_costs' | 'plan_blocks' | 'habit_items' | 'subjects' | 'week_notes'
 const NOW = '__now__'   // filled in with the time the change is applied
 /** Changes one card can hold (a long message about several sessions: each session, place and journey). */
 export const MAX_ACTIONS = 16
@@ -106,7 +106,8 @@ export async function loadRows(sb: SupabaseClient, raw: RawAction[], ctx: Planne
 const grounded = (words: string, said: string) => { const w = norm(words); return w.length >= 3 && norm(said).includes(w) }
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T12:00:00Z`))
 
-export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, said: string, today: string): { actions: Action[]; problems: string[] } {
+/** `said`: his message and what he said in the last 30 minutes; `message`: his message alone (when it isn't `said`). */
+export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, said: string, today: string, message: string = said): { actions: Action[]; problems: string[] } {
   const actions: Action[] = []
   const problems: string[] = []
   const finished = new Set<string>()        // tasks completed or dropped in this card: nothing else to do to them
@@ -138,7 +139,7 @@ export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, 
       const sameCardPlaces = raw.filter((x) => x.op === 'place_new' || x.op === 'event_weekly' || x.op === 'event_new')
         .map((x) => Object.fromEntries((x.value ?? '').split(';').map((y) => y.split('=').map((z) => z.trim())))[x.op === 'place_new' ? 'name' : 'place']).filter(Boolean)
       const placeNews = raw.filter((x) => x.op === 'place_new').map((x) => Object.fromEntries((x.value ?? '').split(';').map((y) => y.split('=').map((z) => z.trim()))).name).filter(Boolean)
-      const r = checkC2(op, { ...a, date_to: a.date_to ?? '', time_to: a.time_to ?? '', sameCardPlaces, placeNews } as typeof a & { date_to: string; time_to: string }, ref, c2, (w) => grounded(w, said), today)
+      const r = checkC2(op, { ...a, date_to: a.date_to ?? '', time_to: a.time_to ?? '', sameCardPlaces, placeNews, said, message } as typeof a & { date_to: string; time_to: string }, ref, c2, (w) => grounded(w, said), today)
       if (r.problem) problems.push(r.problem)
       if (r.action) actions.push(r.action)
       continue
@@ -221,7 +222,26 @@ export function checkActions(raw: RawAction[], ctx: PlannerContext, rows: Rows, 
         const was = deadlineLabel(t, today) || 'no date'
         // the column follows the date (my-spec 42), except Waiting and Someday, which are his choice
         const status = ['inbox', 'today', 'this_week', 'this_month'].includes(t.status) ? autoStatus(a.date, today) : t.status
-        add(`${esc(was)} → due ${day(a.date)}`, { due_at: dueAtFromDate(a.date), window_start: null, window_end: null, window_label: null, status, needs_sorting: false })
+        // (a "not before" in the same card stays: it's applied after this)
+        const start = raw.some((x) => x.op === 'not_before' && x.ref === a.ref) ? {} : { window_start: null }
+        add(`${esc(was)} → due ${day(a.date)}`, { due_at: dueAtFromDate(a.date), ...start, window_end: null, window_label: null, status, needs_sorting: false })
+        break
+      }
+      case 'not_before': {
+        // "don't start FM before Mon 26 Oct": nothing is planned for it before that day (its window_start)
+        const was = t.window_start ? `not before ${day(t.window_start.slice(0, 10))}` : 'any day'
+        if (/^(clear|none|any)$/i.test(value)) {
+          if (!t.window_start) { problems.push(`“${t.title}” can already start any day`); break }
+          add(`${esc(was)} → can start any day`, { window_start: null })
+          break
+        }
+        if (!isDate(a.date) || a.date <= today) { problems.push(`no clear start date for “${t.title}”`); break }
+        if (!grounded(a.words, said)) { problems.push(`the start date for “${t.title}” wasn’t in your words`); break }
+        if (t.window_start?.slice(0, 10) === a.date) { problems.push(`“${t.title}” already starts ${day(a.date)}`); break }
+        // (a start after its deadline means it can never be planned: a new due date in the same card counts)
+        const due = raw.find((x) => x.op === 'due' && x.ref === a.ref && isDate(x.date ?? ''))?.date ?? deadlineOf(t)
+        if (due && a.date > due) { problems.push(`“${t.title}” is due ${day(due)}, before ${day(a.date)}: change its due date too, or pick an earlier start`); break }
+        add(`${esc(was)} → <b>not before ${day(a.date)}</b> <i>(nothing planned for it before then)</i>`, { window_start: a.date })
         break
       }
       case 'star':

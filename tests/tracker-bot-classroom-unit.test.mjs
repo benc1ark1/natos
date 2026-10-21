@@ -16,11 +16,11 @@ test('which assignments are tests: test, assessment, exam, consolidation, mock, 
   for (const t of ['Integration sheet', 'Forces worksheet', 'Contest entry form', 'Attestation']) assert.ok(!C.looksLikeTest(t), t)
 })
 
-test('the description: the Homework feed header and HTML go; it is kept only for test-like assignments', () => {
+test('the description: the Homework feed header and HTML go; it is kept for every assignment (fix round 20: the questions in the notes)', () => {
   const desc = 'Class: Maths Further Mf1a\nSubject: Further Maths\nClassroom: https://classroom.google.com/c/A\n\nTest on <b>Thursday 12 Nov</b>: matrices &amp; vectors<br>50 minutes, no momentum.\n\nRef: 0123456789abcdef'
   assert.equal(C.cleanDescription(desc), 'Test on Thursday 12 Nov: matrices & vectors\n50 minutes, no momentum.')
   assert.equal(C.classroomDetails('Mf1a · Due 08:30', 'FM HT2 Test', desc), 'Mf1a · Due 08:30\n\nTest on Thursday 12 Nov: matrices & vectors\n50 minutes, no momentum.')
-  assert.equal(C.classroomDetails('Mf1a · Due 08:30', 'Integration sheet', desc), 'Mf1a · Due 08:30', 'ordinary homework is unchanged')
+  assert.equal(C.classroomDetails('Mf1a · Due 08:30', 'Integration sheet', desc), 'Mf1a · Due 08:30\n\nTest on Thursday 12 Nov: matrices & vectors\n50 minutes, no momentum.', 'ordinary homework keeps it too')
   assert.equal(C.classroomDetails(null, 'FM HT2 Test', ''), null)
   assert.equal(C.classroomDetails(null, 'FM HT2 Test', 'Do your best'), 'Do your best')
 })

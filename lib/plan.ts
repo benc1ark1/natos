@@ -19,7 +19,8 @@ export type Energy = 'normal' | 'tired' | 'ill'
 
 /** One thing to place, in priority order. */
 export type PlanItem = { title: string; minutes: number; kind: BlockKind; ref?: { kind: string; id: string } | null; why?: string
-  after?: string }   // goes after the block with this ref id or title, if it's placed (an ACT test's review after the test)
+  after?: string     // goes after the block with this ref id or title, if it's placed (an ACT test's review after the test)
+  subject?: string | null }   // its subject, when the code that picked it knows (a focus period keeps only its own)
 export type Block = { start: string; end: string; title: string; kind: BlockKind; ref?: { kind: string; id: string } | null; why?: string; date?: string
   intensity?: string; wanted?: string; key?: string    // training placed by load (lib/load.ts): light / moderate / heavy
   place?: string | null; placeKey?: string | null; leave?: string | null; from?: string | null; back?: number }   // where, and when to leave (lib/optimiser.ts)

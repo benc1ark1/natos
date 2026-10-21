@@ -11,7 +11,8 @@ import { trainingTypes, type TypeDef } from '@/lib/training'
 import { loadRules, setRuleEnabled } from '@/lib/training-data'
 import { setPlanningCache } from '@/lib/usePlanning'
 import { activePlaces, activeSessions, daysWords, owenDays, placeWords, sessionWords } from '@/lib/setup'
-import { TIMES_15 } from '@/lib/time'
+import { TIMES_15, dowShort, shortDate, todayISO } from '@/lib/time'
+import { focusPeriods, focusWords } from '@/lib/today/focus'
 import Select from './controls/Select'
 import Toggle from './controls/Toggle'
 import GoogleSettings from './GoogleSettings'
@@ -95,6 +96,7 @@ export default function SettingsView() {
             <RulesList rules={data.rules} reload={reload} toast={toast.show} />
           </>}
           {g.key === 'load' && <LoadCosts types={trainingTypes(data.planning)} toast={toast.show} />}
+          {g.key === 'planning' && <FocusLine planning={data.planning} />}
         </section>
       ))}
 
@@ -288,5 +290,17 @@ function SetupList({ planning }: { planning: Record<string, unknown> }) {
       <div className="lbl" style={{ margin: '14px 0 6px' }}>Owen’s days</div>
       <p className="setupline">{owen ? Object.entries(owen).map(([k, d]) => `${sessions.find((x) => x.key === k)?.name ?? k} ${daysWords(d)}`).join(', ') : 'Not settled: ask the bot “which days should I give Owen?”'}</p>
     </section>
+  )
+}
+
+/** His focus period ("until 25 Oct only ACT"): shown here, set and ended by telling the bot. It ends by itself. */
+function FocusLine({ planning }: { planning: Record<string, unknown> }) {
+  const today = todayISO()
+  const now = focusPeriods(planning).filter((f) => f.until >= today)
+  return (
+    <>
+      <div className="lbl" style={{ margin: '14px 0 6px' }}>Focus period</div>
+      <p className="setupline">{now.length ? now.map((f) => `${focusWords(f)}${f.from > today ? ` (from ${dowShort(f.from)} ${shortDate(f.from)})` : ''}`).join('; ') : 'None. Tell the bot “until 25 Oct only ACT” to plan only that until then.'}</p>
+    </>
   )
 }

@@ -42,12 +42,13 @@ async function recentTexts(sb: SupabaseClient): Promise<string[]> {
  * brain answers as before).
  */
 async function whatNext(sb: SupabaseClient, today: string, d: TrackerData): Promise<string | null> {
-  const { loadToday } = await import('../../today/load')
+  const [{ loadToday }, { clockOf }] = await Promise.all([import('../../today/load'), import('../../today/message')])
   const plan = (await loadToday(sb, { date: today })).plan
   const left = plan.items.filter((it) => !it.isDone)
+  // item 18: a clock time only for a fixed session (his set time); everything else is done in the list's order
   const pick = (it: (typeof left)[number]): PlanPick => ({
     key: it.key, kind: it.kind === 'training' ? 'training' : it.kind === 'task' ? 'task' : /:review$/.test(it.key) ? 'review' : 'fix',
-    tier: 1, subject: it.subject, title: `${it.at ? `${it.at} ` : ''}${it.title}`, open: it.open || (it.kind === 'training' ? 'your session' : 'see Today'),
+    tier: 1, subject: it.subject, title: `${clockOf(it) ? `${clockOf(it)} ` : ''}${it.title}`, open: it.open || (it.kind === 'training' ? 'your session' : 'see Today'),
     url: it.url, minutes: it.minutes, why: it.why, done: it.done, topicId: it.topicId, goalId: it.goalId, taskId: it.taskId, programmeItemId: it.programmeItemId,
   })
   return left.length ? whatNextText(pick(left[0]), left.slice(1).map(pick), d) : null

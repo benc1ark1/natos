@@ -25,6 +25,8 @@ export type OptWorld = LoadWorld & {
   done: Map<string, number>               // sessions of each type already done this week
   targetIds?: Map<string, string>         // session type → the weekly target it counts toward
   preferred?: Map<string, string[]>       // session type → the days it already has in the plan (kept where that costs nothing)
+  holiday?: boolean                       // a holiday week: sessions that can only happen at school are off
+  testDays?: Map<string, string>          // his test days (no training at all): date → the test
 }
 
 export type OptPlan = LoadPlan & {
@@ -46,7 +48,9 @@ const day = (iso: string) => dowShort(iso)
 export function setupNeeds(w: OptWorld, only?: string[] | null): { required: LoadNeed[]; optional: LoadNeed[] } {
   const W = weightsOf(w.settings)
   const required: LoadNeed[] = [], optional: LoadNeed[] = []
-  const live = w.sessions.filter((s) => !s.archived && !s.flexible && (!only || only.includes(s.key)))
+  // in the holidays a session that can only happen at school (the school gym) is off: not needed, not "not placed"
+  const atSchoolOnly = (s: SessionType) => { const ps = placesFor(s, w.places); return ps.length > 0 && ps.every((p) => p.access === 'school') }
+  const live = w.sessions.filter((s) => !s.archived && !s.flexible && (!only || only.includes(s.key)) && !(w.holiday && atSchoolOnly(s)))
   // a session done straight after another one ("stack core onto injury prevention") is one session
   const stacked = new Map<string, SessionType[]>()
   for (const s of live) if (s.stackWith && live.some((x) => x.key === s.stackWith)) stacked.set(s.stackWith, [...(stacked.get(s.stackWith) ?? []), s])
@@ -267,7 +271,10 @@ export function optimise(w: OptWorld, opts: { only?: string[] | null; pins?: Map
     const count = chosen.placed.filter((x) => x.type === 'upper').length + (w.done.get('upper') ?? 0)
     // his choice that the week can't fit: say how many and why (never "3×" when 2 are planned)
     const short = opts.upperCount != null && count < opts.upperCount
-    upper = { ...upper, count, reason: short ? `${count}× this week (you asked for ${opts.upperCount}×): upper body needs ${w.settings.upperRecoveryH} h between sessions, and no other day fits` : upper.reason }
+    // a test in the week takes its day (and the heavy day before it): said, so the shortfall makes sense
+    const tests = [...(w.testDays ?? [])].filter(([d]) => d >= w.today && d <= w.to).map(([d, what]) => `${day(d)} (${what})`)
+    const why = `${tests.length ? `no training on ${tests.join(', ')} and only light the day before; ` : ''}upper body needs ${w.settings.upperRecoveryH} h between sessions, and no other day fits`
+    upper = { ...upper, count, reason: short ? `${count}× this week (you asked for ${opts.upperCount}×): ${why}` : opts.upperCount != null ? `${count}× (your choice)` : upper.reason.replace(/^\d+× \(your set-up\)$/, `${count}× (your set-up)`) }
   }
   // stretching and other flexible units: where it's easy, after everything else
   const flexible = flexibleUnits(w, chosen, opts.only ?? null)
