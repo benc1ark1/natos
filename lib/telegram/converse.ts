@@ -207,7 +207,7 @@ async function answerMessage(sb: SupabaseClient, chatId: number, turn: TurnRow, 
   // for another week or a "correction" that isn't about the plan is its own message (fix round, item 10: before, every
   // plan / correction / instruction went into the waiting week card). The week card re-fits after that change's ✅.
   const ownPlan = !ownMessage && card?.kind === 'plan' && card.status !== 'editing' && !(card.payload as { add?: boolean }).add
-    && !editsPlan(message, res.decision, card, today)
+    && ['plan', 'correction', 'instruction'].includes(res.decision.intent) && !editsPlan(message, res.decision, card, today)
   if (ownMessage || (ownPlan && res.decision.intent === 'correction')) {
     const again = await ask(null)
     if (again.ok) { res = again; card = null }
@@ -349,7 +349,7 @@ export const looksDone = (message: string) =>
   /\b(is|are|'s|’s|was|were|all|now)\s+(done|finished|complete|completed|handed in|submitted|sent)\b|^(done|finished|completed|did|handed in|submitted)\b/i.test(message.trim())
 
 // Words that change a plan card itself: "no physics tonight", "start at 7", "lighter on Fri", "upper Sat at PureGym"
-const PLAN_EDIT = /^(?:no|not|without|less|more|fewer|lighter|heavier|start|finish|end|only|skip|swap|instead|keep|drop|add|put|move|make it|i only have|i've got|ive got)\b|\b(?:instead|lighter|heavier|earlier|later)\b/i
+const PLAN_EDIT = /^(?:no|not|without|less|more|fewer|lighter|heavier|start|finish|end|only|skip|swap|instead|keep|drop|add|put|move|make it|i only have|i've got|ive got)\b|\b(?:instead|lighter|heavier|earlier|later|tired|ill|sick|wrecked|knackered|exhausted)\b/i
 
 /** "plan next week" while this week's card waits (or "this week" while next week's waits): another week's plan. */
 export function otherWeek(message: string, card: Pick<Pending, 'payload'>, today: string): boolean {
