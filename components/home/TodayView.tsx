@@ -74,7 +74,7 @@ export default function TodayView({ toast, onChanged }: { toast: ShowToast; onCh
             <div className="empty">Nothing planned for today. Enjoy it, or capture something above and it’ll be planned in.</div>
           ) : (
             <ol className="tlist">
-              {plan.items.map((it) => {
+              {plan.items.map((it, i) => {
                 const t = target(it)
                 return (
                   <li key={it.key} className={`titem ${it.isDone ? 'done' : ''} ${busy === it.key ? 'pending' : ''}`}>
@@ -84,7 +84,8 @@ export default function TodayView({ toast, onChanged }: { toast: ShowToast; onCh
                     </button>
                     <div className="tbody">
                       <div className="ttop">
-                        <span className="ttime mono">{it.at ?? 'any time'}</span>
+                        {/* item 18: an ordered list with minutes; only a training session shows its clock time */}
+                        <span className="ttime mono">{i + 1}.{it.kind === 'training' && it.at ? ` ${it.at}` : ''}</span>
                         <span className="tkind">{KIND[it.kind]}</span>
                         <span className="tdur">{mins(it.minutes)}</span>
                       </div>

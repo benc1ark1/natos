@@ -248,7 +248,7 @@ test('his must-do tasks: due by tomorrow first (homework tier), then his Today c
   assert.deepEqual(out[0].done, { kind: 'task', taskId: 'overdue' })
 })
 
-test('the morning message: the date, the fixed line, each item with its time, what to open and a tap; “+N more”; nothing else', () => {
+test('the morning message: the date, the fixed line, each item numbered with its minutes (fix round 18: no clock time), what to open and a tap; “+N more”; nothing else', () => {
   const hw = pick(1, 'homework', 45, { title: 'Physics homework <waves>' })
   const plan = buildToday(input({ picks: [hw, pick(3, 'review', 25), pick(4, 'fix', 40), pick(5, 'ahead', 60), pick(6, 'stretch', 30), pick(7, 'old', 30)],
     fixed: [{ at: '08:45', end: '16:00', title: 'School', icon: '🏫', school: true }, { at: '19:45', end: '21:00', title: 'Football', icon: '⚽' }] }))
@@ -256,15 +256,15 @@ test('the morning message: the date, the fixed line, each item with its time, wh
   plan.items[1].isDone = true
   const html = todayHtml(plan)
   assert.match(html, /^📌 <b>Today · Wednesday, 4 November<\/b>\n<i>🏫 School 08:45–16:00 · ⚽ Football 19:45<\/i>\n\n/)
-  assert.match(html, /<b>16:10<\/b> 📌 Physics homework &lt;waves&gt; <i>· 45m<\/i>\n {5}↳ open homework \d+/)
-  assert.match(html, /✅ <s>\d\d:\d\d 📚 review \d+ · 25m<\/s>/, 'done: struck through, no "open" line')
+  assert.match(html, /\n1\. 📌 Physics homework &lt;waves&gt; <i>· 45m<\/i>\n {5}↳ open homework \d+/)
+  assert.match(html, /✅ <s>2\. 📚 review \d+ · 25m<\/s>/, 'done: struck through, no "open" line')
   assert.match(html, /<i>\+1 more · \/today all<\/i>$/)
   assert.doesNotMatch(html, /Don’t forget|Targets|Remember|Your day/, 'nothing else')
   const buttons = todayButtons(plan)
   assert.equal(buttons.length, 5)
   assert.ok(buttons.every((r) => r.length === 1 && Buffer.byteLength(r[0].callback_data) <= 64))
   assert.equal(buttons[0][0].callback_data, 'tdy:mb1:00000000-0000-4000-8000-000000000000')
-  assert.match(buttons[0][0].text, /^☐ 16:10 Physics homework/)
+  assert.match(buttons[0][0].text, /^☐ Physics homework/)
   assert.match(buttons[1][0].text, /^✅/)
   // /today all lists the hidden ones too
   assert.match(todayHtml(plan, { all: true }), /<b>Also on the list<\/b> \(1\)\n• old \d+/)

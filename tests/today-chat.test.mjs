@@ -59,7 +59,7 @@ async function savedList(date, rows) {
   return out
 }
 
-test('the morning message: once at 07:30, Today with a time, what to open and a tap each, plus the fixed line; it IS the pinned Today', { skip }, async () => {
+test('the morning message: once at 07:30, Today numbered with minutes (training with its time), what to open and a tap each, plus the fixed line; it IS the pinned Today', { skip }, async () => {
   await setPlanning(BASE)
   const { hw, form } = await schoolDay()
   const upper = await add('weekly_targets', { name: 'Upper', target_count: 2 })
@@ -73,8 +73,8 @@ test('the morning message: once at 07:30, Today with a time, what to open and a 
   const m = mornings()[0]
   show(m)
   assert.match(m.text, /^📌 <b>Today · \w+day, \d+ \w+<\/b>\n<i>🏫 School 08:45–16:00 · ⚽ Football training 19:45<\/i>\n/)
-  assert.match(m.text, /<b>\d\d:\d\d<\/b> 📌 Physics homework: waves worksheet <i>· 45m<\/i>\n {5}↳ Worksheet 3, questions 1–8/, 'its time, how long and exactly what to open')
-  assert.match(m.text, /<b>16:30<\/b> 🏋️ Upper @ PureGym <i>· 1h 30m<\/i>/, 'training as one item')
+  assert.match(m.text, /\n\d\. 📌 Physics homework: waves worksheet <i>· 45m<\/i>\n {5}↳ Worksheet 3, questions 1–8/, 'its place in the list, how long and exactly what to open (fix round 18: no clock time)')
+  assert.match(m.text, /\n\d\. <b>16:30<\/b> 🏋️ Upper @ PureGym <i>· 1h 30m<\/i>/, 'training as one item, with its time')
   assert.match(m.text, /Email the trip form/)
   assert.doesNotMatch(m.text, /Your day|Don’t forget|Targets left|Study next/, 'nothing else')
   const taps = buttons(m)
@@ -109,7 +109,8 @@ test('holiday morning: half-term, no school, and the message waits for his holid
   const m = mornings()[0]
   show(m)
   assert.match(m.text, /^📌 <b>Today · [^<]+<\/b> · <i>half-term<\/i>\n<i>⚽ Football training 19:45<\/i>/, 'no school on a holiday; football still on')
-  const times = [...m.text.matchAll(/<b>(\d\d:\d\d)<\/b>/g)].map((x) => x[1])
+  // (fix round 18: study shows no clock time, so the saved list's times are checked)
+  const times = (await q(`select to_char(start_time, 'HH24:MI') t from plan_blocks where on_date = $1 and source = 'auto'`, [today()])).map((r) => r.t)
   assert.ok(times.length >= 2 && times.every((t) => t >= '09:30'), `after wake + the morning routine: ${times}`)
   assert.equal(chat.tg.of('pinChatMessage').length, 1)
   chat.noSurprises()
@@ -127,15 +128,15 @@ test('one tap = done and it moves things forward (topic last_done + step, task a
   await tick('07:30')
   const m = mornings()[0]
   show(m)
-  assert.match(m.text, /<b>17:00<\/b> 📚 PC1-01 Matrices: exam questions <i>· 40m<\/i>\n {5}↳ Bicen Core Pure → CP1: Matrices/, 'the saved list, as saved')
+  assert.match(m.text, /\n2\. 📚 PC1-01 Matrices: exam questions <i>· 40m<\/i>\n {5}↳ Bicen Core Pure → CP1: Matrices/, 'the saved list, as saved')
 
   await tapOn(m, /Matrices/)
   let tp = (await q(`select last_done::text, step from topics where id = $1`, [topic.id]))[0]
   assert.deepEqual([tp.last_done, tp.step], [today(), 4], 'last done today, on to Bicen exam questions')
   assert.equal((await q(`select status from plan_blocks where id = $1`, [b2.id]))[0].status, 'done')
   const after = latest(m.message_id)
-  assert.match(after.text, /✅ <s>17:00 📚 PC1-01 Matrices: exam questions · 40m<\/s>/, 'the pinned Today redrawn in place')
-  assert.ok(buttons(after).some((b) => /^✅ 17:00 PC1-01 Matrices/.test(b.text)))
+  assert.match(after.text, /✅ <s>2\. 📚 PC1-01 Matrices: exam questions · 40m<\/s>/, 'the pinned Today redrawn in place')
+  assert.ok(buttons(after).some((b) => /^✅ PC1-01 Matrices/.test(b.text)))
   assert.equal(chat.tg.sent().length, 1, 'no extra ✅ card or message: the tap is the confirmation')
 
   await tapOn(m, /Matrices/)
@@ -227,8 +228,8 @@ test('no double counting: what he already reported by message shows as done, and
   await chat.nat('/today')
   const m = chat.tg.sent().at(-1)
   show(m)
-  assert.match(m.text, /✅ <s>16:10 📚 PC1-03 Roots: Bicen exam questions/)
-  assert.match(m.text, /✅ <s>17:00 📌 Chemistry form/, 'the task done elsewhere shows done too')
+  assert.match(m.text, /✅ <s>1\. 📚 PC1-03 Roots: Bicen exam questions/)
+  assert.match(m.text, /✅ <s>2\. 📌 Chemistry form/, 'the task done elsewhere shows done too')
   assert.ok(buttons(m).every((b) => b.text.startsWith('✅')))
 
   // tapping the reported topic now unticks it on Today only: the report's record isn't touched
@@ -372,7 +373,7 @@ test('fix 2: a plan he applies after ticking one item replaces the rest of the l
   const m = chat.tg.sent().at(-1)
   show(m)
   assert.match(m.text, /His own plan: maths/)
-  assert.match(m.text, /✅ <s>16:10 📚 Saved item A/, 'what he ticked stays, ticked')
+  assert.match(m.text, /✅ <s>1\. 📚 Saved item A/, 'what he ticked stays, ticked')
   assert.doesNotMatch(m.text, /Saved item B/)
   chat.noSurprises()
 })
